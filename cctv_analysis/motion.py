@@ -98,6 +98,8 @@ def scan_motion(path: str, meta: dict, cfg, camera: str = "") -> MotionResult:
 
     mog = cv2.createBackgroundSubtractorMOG2(history=int(fps * 120), varThreshold=var_thr,
                                              detectShadows=True)
+    # only *mild* darkening counts as shadow; dark clothing must stay foreground
+    mog.setShadowThreshold(0.82)
     kernel_o = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     kernel_d = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
@@ -140,7 +142,10 @@ def scan_motion(path: str, meta: dict, cfg, camera: str = "") -> MotionResult:
         if i < 3:
             ratio = 0.0
         if is_global:
-            res.lighting_changes.append(float(t))
+            # lighting/exposure jump: rebuild the background from this frame
+            if not res.lighting_changes or t - res.lighting_changes[-1] > 1.5:
+                res.lighting_changes.append(float(t))
+            mog.apply(gb, learningRate=1.0)
             ratio = 0.0
         else:
             heat += (fg > 0)
