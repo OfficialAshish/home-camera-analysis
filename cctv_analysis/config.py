@@ -65,6 +65,7 @@ class Config:
     max_videos: int = 0                          # 0 = no limit
     only_newer_than_days: float = 0              # 0 = all files
     reprocess: bool = False                      # ignore the "already done" cache
+    max_runtime_minutes: float = 0               # stop cleanly (and still build reports) after this; 0 = no limit
     known_faces_dir: str = ""                    # folder/<Name>/*.jpg (staff, owner)
 
     # ------------------------------------------------------------ time info

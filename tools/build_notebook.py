@@ -108,6 +108,8 @@ SAVE_CLIPS = "people"  #@param ["all", "people", "flagged", "none"]
 ONLY_NEWER_THAN_DAYS = 0  #@param {type:"number"}
 MAX_VIDEOS = 0  #@param {type:"integer"}
 REPROCESS_ALL = False  #@param {type:"boolean"}
+STOP_AFTER_MINUTES = 0  #@param {type:"number"}
+# STOP_AFTER_MINUTES: e.g. 600 on free Colab so reports are written before the session limit (0 = no limit)
 """, hide=True)
 code("""
 #@title Advanced settings (zones, ignore areas, file naming) – optional
@@ -144,6 +146,7 @@ cfg = Config(
     motion_sensitivity=MOTION_SENSITIVITY, use_faces=USE_FACES, use_vlm=USE_AI_DESCRIPTIONS, vlm_scope=AI_DESCRIBE,
     save_clips=SAVE_CLIPS != "none", clip_scope=SAVE_CLIPS if SAVE_CLIPS != "none" else "flagged",
     only_newer_than_days=ONLY_NEWER_THAN_DAYS, max_videos=MAX_VIDEOS, reprocess=REPROCESS_ALL,
+    max_runtime_minutes=STOP_AFTER_MINUTES,
     zones=ZONES, ignore_regions=IGNORE_REGIONS, filename_time_patterns=FILENAME_TIME_PATTERNS,
     time_overrides=TIME_OVERRIDES, **PRESETS[SPEED_PRESET])
 for k, v in EXTRA.items():

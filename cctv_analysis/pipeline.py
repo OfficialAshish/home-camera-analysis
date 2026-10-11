@@ -143,6 +143,11 @@ class Analyzer:
         t_all = time.time()
         stats = Counter()
         for i, p in enumerate(todo, 1):
+            if cfg.max_runtime_minutes and (time.time() - t_all) / 60 >= cfg.max_runtime_minutes:
+                log.warning("Time budget of %.0f min reached – %d video(s) left for the next run",
+                            cfg.max_runtime_minutes, len(todo) - i + 1)
+                stats["videos_deferred"] = len(todo) - i + 1
+                break
             log.info("[%d/%d] %s", i, len(todo), p)
             try:
                 n = self.process_video(p)
