@@ -126,12 +126,18 @@ def show_events(cfg: Config, where: str = "level IN ('HIGH','REVIEW')", order: s
     return rows
 
 
+_SEM_CACHE = {}
+
+
 def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
     """Free-text search over all analysed keyframes (SigLIP-2), e.g.
     'person in a red shirt', 'man with a helmet', 'someone carrying a big bag'."""
     from .detector import resolve_device
     from .semantic import Semantic, search_index
-    sem = Semantic(cfg, resolve_device(cfg.device))
+    key = (cfg.semantic_model, tuple(cfg.suspicious_prompts), tuple(cfg.normal_prompts))
+    sem = _SEM_CACHE.get(key)
+    if sem is None:
+        sem = _SEM_CACHE[key] = Semantic(cfg, resolve_device(cfg.device))
     hits = search_index(sem, os.path.join(cfg.output_dir, "semantic_index.npz"), query, k)
     st = _store(cfg)
     results = []
