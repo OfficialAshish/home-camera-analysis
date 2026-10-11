@@ -10,3 +10,19 @@
 11:32:47 INFO Loaded yolo26n-pose.pt
 [ WARN:0@3.304] global net_impl_backend.cpp:345 setPreferableTarget Targets are not supported by the new graph engine for now
 [ WARN:0@3.445] global net_impl_backend.cpp:345 setPreferableTarget Targets are not supported by the new graph engine for now
+[transformers] Model config: bos_token_id must be `None` or an integer within the vocabulary (between 0 and 31999), got 49406. This may result in unexpected behavior.
+[transformers] Model config: eos_token_id must be `None` or an integer within the vocabulary (between 0 and 31999), got 49407. This may result in unexpected behavior.
+Loading weights:   0%|          | 0/408 [00:00<?, ?it/s]Loading weights: 100%|██████████| 408/408 [00:00<00:00, 8961.58it/s]
+11:35:13 INFO   event ch01-20261011-100000-0001001 00:00:00→00:01:19 person persons=47 tracks=49 faces=345 score=46 restricted_zone,crowd,hand_at_waist,repeat_visitor
+11:35:13 INFO   done: 1 event(s) in 148.2s (0.5x real-time)
+11:35:14 INFO [2/2] test_data/shop/ch01/ch01_20261011221500.mp4
+11:35:14 INFO   ch01 | 640x360 12.0fps 00:02:30 | mpeg4 | start 2026-10-11 22:15:00 (filename)
+11:35:15 INFO   motion pass: 600 frames, 2 event(s), 1 tamper, 4 lighting change(s) [1s]
+11:35:41 INFO   event ch01-20261011-221518-0002001 00:00:18→00:00:47 motion-only persons=0 tracks=0 faces=0 score=15 after_hours
+11:36:04 INFO   event ch01-20261011-221628-0002002 00:01:28→00:01:52 motion-only persons=0 tracks=0 faces=0 score=15 after_hours
+11:36:04 INFO   done: 2 event(s) in 50.4s (3.0x real-time)
+11:36:04 INFO Analysis finished in 3.3 min: {'videos_ok': 2, 'events': 3}
+11:36:05 INFO Excel report: test_work/CCTV_Report.xlsx (3 events, 216 thumbnails)
+11:36:05 INFO HTML report: test_out/report.html
+11:36:08 INFO Highlight reel: test_out/highlight_reel.mp4 (1 events)
+{'videos_ok': 2, 'events': 3}

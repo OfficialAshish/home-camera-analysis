@@ -76,10 +76,11 @@ class FaceEngine:
             for f in faces:
                 f = f.copy()
                 f[:14] /= scale
-                f[0:14:2] += cx1
-                f[1:14:2] += cy1
+                # layout: x, y, w, h, 5 landmarks (x, y), score -> offset positions, not sizes
+                f[[0, 4, 6, 8, 10, 12]] += cx1
+                f[[1, 5, 7, 9, 11, 13]] += cy1
                 fw, fh = f[2], f[3]
-                if min(fw, fh) < self.cfg.face_min_size / 2:
+                if min(fw, fh) < self.cfg.face_min_size:
                     continue
                 out.append({"track": p.get("track"), "row": f, "score": float(f[14]),
                             "box": [float(f[0]), float(f[1]), float(f[0] + fw), float(f[1] + fh)]})
@@ -170,7 +171,7 @@ class IdentityDB:
         log.info("Enrolled %d known people", n)
         return n
 
-    def assign(self, emb: np.ndarray, when: str, sample: str = "") -> tuple:
+    def assign(self, emb: np.ndarray, when: str, sample: str = "", event_id: str = "") -> tuple:
         """Return (identity_id, similarity, known_name)."""
         known_name = ""
         for k in self.known:
@@ -188,6 +189,9 @@ class IdentityDB:
             c = self.emb[bi] * n + emb
             self.emb[bi] = c / np.linalg.norm(c)
             rec["count"] = n + 1
+            ev = rec.setdefault("events", [])
+            if event_id and event_id not in ev:
+                ev.append(event_id)
             rec["last_seen"] = max(rec["last_seen"], when)
             rec["first_seen"] = min(rec["first_seen"], when)
             if known_name and not rec.get("name"):
@@ -195,7 +199,7 @@ class IdentityDB:
             return rec["id"], best, rec.get("name", "") or known_name
         new_id = f"P{len(self.ids) + 1:04d}"
         self.ids.append({"id": new_id, "count": 1, "first_seen": when, "last_seen": when,
-                         "sample": sample, "name": known_name})
+                         "sample": sample, "name": known_name, "events": [event_id] if event_id else []})
         self.emb.append(emb)
         return new_id, 1.0, known_name
 

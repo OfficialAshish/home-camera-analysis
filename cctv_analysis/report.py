@@ -183,7 +183,7 @@ def build_excel(store, cfg, path):
         "loitering": f"person stayed ≥ {cfg.loiter_seconds:g}s", "running": "very fast movement",
         "crowd": f"≥ {cfg.crowd_size} people at once", "face_hidden": "person facing camera but face not visible (mask/helmet)",
         "hands_up": "both hands above shoulders", "crouching": "crouching / bending low",
-        "hand_at_waist": "hand kept near waist / pocket", "semantic_match": "SigLIP-2 image-text match with a suspicious description",
+        "lights_after_hours": "lights switched on/off while the shop is closed", "semantic_match": "SigLIP-2 image-text match with a suspicious description",
         "vlm_suspicious": "the vision-language model judged the event suspicious",
         "unknown_person_after_hours": "unrecognised face after hours", "repeat_visitor": "same unknown face in ≥ 5 events",
         "long_event": "event ≥ 5 min with people"}

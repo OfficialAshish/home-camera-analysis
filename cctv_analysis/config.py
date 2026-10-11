@@ -128,6 +128,7 @@ class Config:
     face_match_threshold: float = 0.42           # SFace cosine similarity
     known_face_threshold: float = 0.45
     faces_per_track: int = 3
+    face_min_quality: float = 0.30               # below this a face is kept as evidence but not used for identity
 
     # ------------------------------------------------- suspicious heuristics
     loiter_seconds: float = 90.0

@@ -123,8 +123,7 @@ class Detector:
 
 def posture(kpts: Optional[np.ndarray], conf_thr: float = 0.4) -> dict:
     """Simple, explainable posture cues from COCO keypoints."""
-    out = {"face_visible_pose": False, "crouching": False, "hands_up": False,
-           "hand_at_waist": False}
+    out = {"face_visible_pose": False, "crouching": False, "hands_up": False}
     if kpts is None:
         return out
     k = kpts
@@ -150,8 +149,6 @@ def posture(kpts: Optional[np.ndarray], conf_thr: float = 0.4) -> dict:
                 wr = p(w)
                 if wr[1] < sh[1] - 0.25 * torso:
                     out["hands_up"] = True
-                if abs(wr[1] - hip[1]) < 0.25 * torso and np.linalg.norm(wr - hip) < 0.6 * torso:
-                    out["hand_at_waist"] = True
         if out["hands_up"]:
             both = ok("l_wr") and ok("r_wr") and p("l_wr")[1] < sh[1] and p("r_wr")[1] < sh[1]
             out["hands_up"] = bool(both)

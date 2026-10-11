@@ -215,6 +215,15 @@ class Analyzer:
             self.store.insert("tamper", {"video_id": vid, "start_off": tp["start"], "end_off": tp["end"],
                                          "start_dt": _iso(start_dt + dt.timedelta(seconds=tp["start"])) if start_dt else None,
                                          "kind": tp["kind"]}, replace=False)
+        # camera tampering or lighting changes outside motion events become their own events
+        for kind, ivs in (("tamper", mr.tamper), ("lighting", [{"start": t, "end": t} for t in mr.lighting_changes])):
+            for iv in ivs:
+                if not any(e["start"] <= iv["end"] and e["end"] >= iv["start"] for e in mr.events):
+                    mr.events.append({"start": max(0.0, iv["start"] - 3), "end": min(meta["duration"], iv["end"] + 4),
+                                      "motion_peak": 0.0, "motion_mean": 0.0, "motion_active_s": 0.0, "origin": kind})
+        mr.events.sort(key=lambda e: e["start"])
+        for ev in mr.events:
+            ev["lighting_changes"] = sum(1 for t in mr.lighting_changes if ev["start"] <= t <= ev["end"])
         n_saved = 0
         for k, ev in enumerate(mr.events, 1):
             try:
@@ -224,7 +233,6 @@ class Analyzer:
                 log.error("  event %d failed: %s\n%s", k, e, traceback.format_exc())
             if k % 10 == 0:
                 self.store.commit(sync=False)
-        # tamper intervals without motion still deserve an event row
         motion_s = float(sum(e["end"] - e["start"] for e in mr.events))
         self.store.update_video(vid, status="done", n_events=n_saved, motion_seconds=motion_s,
                                 proc_seconds=time.time() - t0, heatmap_path=heat_path,
@@ -289,7 +297,7 @@ class Analyzer:
                     continue
                 tr = tracks.setdefault(tid, {"track": tid, "cls": d["cls"], "obs": [], "votes": Counter(),
                                              "zone_frames": Counter(), "hidden_frames": 0, "hands_up": 0,
-                                             "crouch": 0, "waist": 0, "faces": [], "best_crop": None,
+                                             "crouch": 0, "faces": [], "best_crop": None,
                                              "faces_found": 0})
                 tr["votes"][d["cls"]] += d["conf"]
                 tr["cls"] = tr["votes"].most_common(1)[0][0]
@@ -305,7 +313,6 @@ class Analyzer:
                     ps = posture(d["kpts"])
                     tr["hands_up"] += ps["hands_up"]
                     tr["crouch"] += ps["crouching"]
-                    tr["waist"] += ps["hand_at_waist"]
                     if fe is not None and tid in attempted and tid not in face_by_track and \
                             ps["face_visible_pose"] and (y2 - y1) > 0.3 * H:
                         tr["hidden_frames"] += 1
@@ -356,7 +363,7 @@ class Analyzer:
             if tr["best_crop"] is not None and tr["best_crop"][1].size:
                 sm["person_crop"] = _imwrite(os.path.join(edir, "people", f"track{tid:03d}_{tr['cls'].replace(' ', '_')}.jpg"),
                                              tr["best_crop"][1], cfg.snapshot_jpeg_quality)
-            embs = [x[3] for x in tr["faces"] if x[3] is not None]
+            embs = [x[3] for x in tr["faces"] if x[3] is not None and x[0] >= cfg.face_min_quality]
             if tr["faces"]:
                 q, ft, f, _, crop = tr["faces"][0]
                 if crop.size:
@@ -365,11 +372,11 @@ class Analyzer:
                 m = np.mean(embs, 0)
                 m /= np.linalg.norm(m) + 1e-9
                 when = _iso(start_dt + dt.timedelta(seconds=sm["first"])) if start_dt else rel
-                pid, sim, kn = self.idb.assign(m, when or "", sm["face_crop"])
+                pid, sim, kn = self.idb.assign(m, when or "", sm["face_crop"], eid)
                 if sm["face_crop"]:
                     self.idb.set_sample(pid, sm["face_crop"])
                 sm.update({"identity": pid, "identity_sim": round(sim, 3), "known_name": kn})
-                sm["identity_visits"] = next((r["count"] for r in self.idb.ids if r["id"] == pid), 1)
+                sm["identity_visits"] = next((len(r.get("events", [])) for r in self.idb.ids if r["id"] == pid), 1)
                 id_map[tid] = kn or pid
             for j, (q, ft, f, _, crop) in enumerate(tr["faces"]):
                 cp = sm["face_crop"] if j == 0 else (
@@ -388,8 +395,10 @@ class Analyzer:
         ev["max_persons"] = max_persons
         kinds = set(objects)
         kind = "person" if kinds & PEOPLE_LIKE else "vehicle" if kinds & VEHICLES else \
-            "animal" if kinds & ANIMALS else ("object" if kinds else "motion-only")
-        if cfg.require_person_for_event and kind in ("motion-only", "object"):
+            "animal" if kinds & ANIMALS else ("object" if kinds else
+                                              {"tamper": "camera-tamper", "lighting": "lighting-change"}.get(
+                                                  ev.get("origin", ""), "motion-only"))
+        if cfg.require_person_for_event and kind in ("motion-only", "object", "lighting-change"):
             return False
 
         # ---------------- keyframes, semantic tags
@@ -465,8 +474,7 @@ class Analyzer:
                 "zones": {z: round(v, 1) for z, v in sm["zones"].items()}, "identity": sm["identity"],
                 "identity_sim": sm["identity_sim"], "known_name": sm["known_name"], "face_crop": sm["face_crop"],
                 "person_crop": sm["person_crop"], "hidden_face_s": round(sm["hidden_face_s"], 1),
-                "posture": {"hands_up_s": round(sm["hands_up_s"], 1), "crouch_s": round(sm["crouch_s"], 1),
-                            "hand_at_waist_s": round(sm["waist_s"], 1)},
+                "posture": {"hands_up_s": round(sm["hands_up_s"], 1), "crouch_s": round(sm["crouch_s"], 1)},
                 "faces_found": sm["faces_found"], "path": sm["path"]})
         self.store.insert_many("detections", det_rows)
         idents = sorted({(x["known_name"] or x["identity"]) for x in persons if x["identity"]})

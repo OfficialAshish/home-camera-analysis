@@ -18,7 +18,7 @@ WEIGHTS = {
     "face_hidden": 18,
     "hands_up": 20,
     "crouching": 8,
-    "hand_at_waist": 6,
+    "lights_after_hours": 20,
     "semantic_match": 15,
     "vlm_suspicious": 30,
     "unknown_person_after_hours": 10,
@@ -106,8 +106,8 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
         add("hands_up", "both hands raised above shoulders (possible threat / hold-up)")
     if any(t.get("crouch_s", 0) >= 3 for t in persons):
         add("crouching", "person crouching/bending low for a while")
-    if any(t.get("waist_s", 0) >= 4 for t in persons):
-        add("hand_at_waist", "hand kept near waist/pocket")
+    if ev.get("lighting_changes") and is_after_hours(start_dt, cfg):
+        add("lights_after_hours", f"{ev['lighting_changes']} sudden lighting change(s) after hours (lights switched on/off?)")
     if semantic:
         best = max(semantic, key=lambda s: s["suspicious_score"])
         if best["suspicious_score"] >= cfg.semantic_alert_score and best["lift"] >= 0.6:
@@ -118,7 +118,7 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
         add("vlm_suspicious", f"AI description: {vlm.get('category') or ''} – {vlm.get('reason') or vlm.get('description', '')[:120]}", c)
     if is_after_hours(start_dt, cfg) and any(t.get("identity") and not t.get("known_name") for t in persons):
         add("unknown_person_after_hours", "unrecognised face after hours")
-    if any(t.get("identity_visits", 0) >= 5 and not t.get("known_name") for t in persons):
+    if any(t.get("identity_visits", 0) >= 5 and not t.get("known_name") for t in persons):  # distinct events
         add("repeat_visitor", "same unknown face seen in ≥5 events")
     if ev["end"] - ev["start"] >= 300 and persons:
         add("long_event", f"event lasted {(ev['end'] - ev['start']) / 60:.0f} min")
@@ -158,6 +158,5 @@ def summarize_track(t: dict, fps: float, frame_h: int) -> dict:
     out["hidden_face_s"] = t.get("hidden_frames", 0) * step
     out["hands_up_s"] = t.get("hands_up", 0) * step
     out["crouch_s"] = t.get("crouch", 0) * step
-    out["waist_s"] = t.get("waist", 0) * step
     out["faces_found"] = t.get("faces_found", 0)
     return out
