@@ -569,7 +569,7 @@ def build_html(store, cfg, path, max_embedded=1500, run_id=""):
         try:
             with open(jp) as fh:
                 idinfo = {x["id"]: x for x in json.load(fh)}
-            new_ids = {k for k, x in idinfo.items() if run_id and x.get("first_run") == run_id}
+            new_ids = {k for k, x in idinfo.items() if run_id and x.get("first_run") == run_id and not x.get("name")}
         except Exception:
             pass
     by_score = sorted(events, key=lambda e: -(e["score"] or 0))
@@ -818,10 +818,10 @@ def build_unique_faces(store, cfg, path, run_id=""):
                                    "first": None, "last": None})
         n_ev = len(st["events"] or set(rec.get("events") or []))
         n_days = len(st["days"])
-        if rec.get("first_run") == run_id and run_id:
-            status = "NEW"
-        elif rec.get("name"):
+        if rec.get("name"):
             status = "Known"
+        elif rec.get("first_run") == run_id and run_id:
+            status = "NEW"
         elif n_days >= 3 or n_ev >= 5:
             status = "Regular"
         else:

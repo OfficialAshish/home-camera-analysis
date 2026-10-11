@@ -92,7 +92,13 @@ class Detector:
             except Exception as e:
                 log.warning("Pose model disabled: %s", e)
         self._fresh = True
-        self._extra = {"half": True} if self.half else {}
+        self._extra = {}
+        if self.half:                      # newer ultralytics: quantize=16 replaces the deprecated half=True
+            try:
+                from ultralytics.cfg import DEFAULT_CFG_DICT
+                self._extra = {"quantize": 16} if "quantize" in DEFAULT_CFG_DICT else {"half": True}
+            except Exception:
+                self._extra = {"half": True}
 
     def reset(self):
         """Start a new, independent tracking session (one per event)."""
