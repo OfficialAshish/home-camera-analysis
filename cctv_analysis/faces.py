@@ -61,7 +61,9 @@ class FaceEngine:
             if bw < 12 or bh < 24:
                 continue
             cx1 = int(max(0, x1 - 0.1 * bw)); cx2 = int(min(W, x2 + 0.1 * bw))
-            cy1 = int(max(0, y1 - 0.08 * bh)); cy2 = int(min(H, y1 + 0.55 * bh))
+            # full body (tall box): face is in the top half; close-up / partial body: search almost all of it
+            frac = 0.5 if bh / max(bw, 1) > 2.0 else 0.9
+            cy1 = int(max(0, y1 - 0.08 * bh)); cy2 = int(min(H, y1 + frac * bh))
             crop = frame[cy1:cy2, cx1:cx2]
             if crop.size == 0:
                 continue

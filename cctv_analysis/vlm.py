@@ -22,7 +22,12 @@ class VLM:
         self.cfg = cfg
         cuda = device.startswith("cuda")
         if cuda:
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            if torch.cuda.is_bf16_supported():
+                dtype = torch.bfloat16
+            else:
+                # T4 & older: fp16 can overflow in Qwen-VL; small models fit comfortably in fp32
+                small = any(t in cfg.vlm_model for t in ("256M", "500M", "0.5B", "1B", "2B"))
+                dtype = torch.float32 if small else torch.float16
         else:
             dtype = torch.float32
         self.model = AutoModelForImageTextToText.from_pretrained(

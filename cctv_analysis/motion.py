@@ -211,9 +211,9 @@ def scan_motion(path: str, meta: dict, cfg, camera: str = "") -> MotionResult:
             kind = None
             if b < 12 and base_b > 35:
                 kind = "blackout/covered"
-            elif d < 0.25 * base_d and base_d > 15:
-                kind = "lens covered (uniform image)"
-            elif s < 0.12 * base_s and base_s > 30:
+            elif s < 0.15 * base_s and d < 0.5 * base_d and d < 20 and base_d > 15:
+                kind = "lens covered/obstructed"
+            elif s < 0.08 * base_s and base_s > 50:
                 kind = "defocus/blur"
             flags.append((t, kind))
         cur = None
@@ -226,7 +226,8 @@ def scan_motion(path: str, meta: dict, cfg, camera: str = "") -> MotionResult:
                 cur = {"start": float(t), "end": float(t), "kind": kind}
         if cur:
             res.tamper.append(cur)
-        res.tamper = [x for x in res.tamper if x["end"] - x["start"] >= 3]
+        res.tamper = [x for x in res.tamper
+                      if x["end"] - x["start"] >= (10 if x["kind"] == "defocus/blur" else 3)]
         # sustained global change = camera moved / scene changed
         g = np.array(glob)
         run = 0

@@ -124,7 +124,7 @@ class Config:
     # ----------------------------------------------------------------- faces
     use_faces: bool = True
     face_score_threshold: float = 0.75
-    face_min_size: int = 24                      # px, in detection-resolution frame
+    face_min_size: int = 20                      # px, in detection-resolution frame
     face_match_threshold: float = 0.42           # SFace cosine similarity
     known_face_threshold: float = 0.45
     faces_per_track: int = 3

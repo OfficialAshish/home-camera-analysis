@@ -51,7 +51,7 @@ except ImportError:
 md("## Step 2 · Install dependencies (~1–2 min)")
 code("""
 #@title Install packages
-!pip -q install -U "ultralytics>=8.3.200" lap xlsxwriter "transformers>=4.57" accelerate
+!pip -q install -U "ultralytics>=8.3.200" lap xlsxwriter "transformers>=4.57" accelerate sentencepiece protobuf
 !apt-get -qq install -y ffmpeg > /dev/null 2>&1 || true
 import importlib, ultralytics, transformers, torch, cv2
 print("ultralytics", ultralytics.__version__, "| transformers", transformers.__version__,
