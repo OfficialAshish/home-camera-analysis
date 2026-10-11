@@ -15,6 +15,7 @@ for c in nb.cells:
     s = s.replace("sys.path.insert(0, '/content')", f"sys.path.insert(0, '{out}_pkg')").replace("'/content' not in sys.path", f"'{out}_pkg' not in sys.path")
     s = s.replace('SPEED_PRESET = "balanced"', 'SPEED_PRESET = "fast"').replace('AI_DESCRIBE = "flagged"', 'AI_DESCRIBE = "people"')
     s = s.replace('EXTRA = {}', 'EXTRA = {"vlm_model": "HuggingFaceTB/SmolVLM-256M-Instruct", "vlm_max_new_tokens": 60, "det_imgsz": 640}')
+    s = s.replace('AUTHORIZED_ONLY_CAMERAS = ""', 'AUTHORIZED_ONLY_CAMERAS = "ch03"')
     s = s.replace('/content/drive/MyDrive/suspect.jpg', os.path.join(ROOT, "test_data/lena.jpg"))
     if s.startswith("!pip") or "!pip -q install" in s:
         s = "print('skip install')"

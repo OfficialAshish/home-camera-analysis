@@ -17,26 +17,30 @@ Stop scrubbing through hours of recordings. Point this at the Google Drive folde
 | **AI scene tags** and **free-text search** ("man in a helmet near the counter") | Google **SigLIP-2** zero-shot embeddings |
 | **AI description + verdict** of flagged events; reads the DVR clock when file names carry no time | **Qwen3-VL-2B-Instruct** (4B in *accurate* preset) |
 | **Search by photo** – every appearance of a person | face embedding vs identity DB |
-| Reports | `CCTV_Report.xlsx` (10 sheets, thumbnails, clickable links, review drop-down), `report.html` dashboard, timeline charts, activity heatmaps, `highlight_reel.mp4` |
-| Robust for daily use | resumable & incremental (SQLite), per-video error isolation, skip already-processed files, Drive links |
+| Reports | all-time `CCTV_Report.xlsx` + **weekly** `reports/<year>/11-17-Oct-2026-W41.xlsx` (thumbnails, clickable links, review drop-down), tabbed `report.html` dashboard, timeline charts, activity heatmaps |
+| **Daily highlight reels** | every movement of a day from all cameras/videos, running clock + source burnt in; *Highlights* sheet maps reel time → camera, clock time, video, offset; updated incrementally as new videos arrive |
+| **Unique faces & alerts** | `Unique_Faces.xlsx` – one row per person with photo, first/last seen, days, cameras; **NEW faces highlighted** and printed at the end of each run; *authorised-only cameras* raise an alert for anyone not in known faces |
+| Robust for daily use | resumable & incremental (SQLite), **duplicate files skipped by content hash**, per-video error isolation, folder keywords (`6-oct, 7-oct`), optional shop hours, models cached in Drive |
 
 ## Quick start (Google Colab)
 
 1. Open **`cctv-analysis.ipynb`** in Colab (badge above) → `Runtime › Change runtime type › T4 GPU`.
-2. In **Step 3** set `INPUT_DIR` (your CCTV folder in Drive) and `OUTPUT_DIR`, plus shop hours.
+2. In **Step 3** set `INPUT_DIR` (your CCTV folder in Drive) and `OUTPUT_DIR`, optionally `FOLDER_KEYWORDS`, shop hours (blank = 24 h) and `AUTHORIZED_ONLY_CAMERAS`.
 3. `Runtime › Run all`. Use **Step 4** once to check cameras, start times and zone coordinates.
 4. Open `OUTPUT_DIR/CCTV_Report.xlsx` → *Events* sheet → filter **Level = HIGH / REVIEW** or sort by **Score**.
 
-Re-run any time: only new videos are analysed; reports always include everything so far.
+Re-run any time (e.g. daily): only new videos are analysed, copies of already-analysed files are skipped, and only the affected days' reels and weeks' workbooks are rebuilt. Models are stored in `MODEL_CACHE_DIR` on Drive and downloaded only once.
 
 ## Output folder
 
 ```
 CCTV_Analysis/
-├── CCTV_Report.xlsx          # Read Me · Summary · Events · People & Objects · Face Identities · Faces
-│                             # Detections (1/s) · Videos · Tamper & Camera · Activity Grid · Config
-├── report.html               # filterable dashboard (level, camera, date, text)
-├── highlight_reel.mp4        # top HIGH/REVIEW events back-to-back
+├── CCTV_Report.xlsx          # all-time: Read Me · Summary · Events · People & Objects · Face Identities · Faces
+│                             # Detections (1/s) · Videos · Tamper & Camera · Activity Grid · Highlights · Config
+├── reports/2026/11-17-Oct-2026-W41.xlsx   # same sheets, one week per file (27-Sep-03-Oct-2026-W39 across months)
+├── Unique_Faces.xlsx         # Unique Faces (NEW = yellow) · New faces log · Unauthorized alerts
+├── report.html               # tabs Events / Faces / Highlights / Videos; filters level, camera, date range, person, text
+├── highlights/2026/2026-10-11_highlights.mp4   # every movement of the day, all cameras, in time order
 ├── charts/                   # timeline.png, people_by_hour.png
 ├── heatmaps/                 # where movement happens, per video
 ├── events/<camera>/<date>/<event-id>/
@@ -92,7 +96,9 @@ All settings live in [`cctv_analysis/config.py`](cctv_analysis/config.py) (docum
 | `vlm.py` | Qwen3-VL event description, verdict JSON parsing, clock reading |
 | `rules.py` | explainable scoring |
 | `pipeline.py` | orchestration (resumable) |
-| `report.py` | Excel, HTML, charts, highlight reel |
+| `report.py` | master + weekly Excel, Unique_Faces.xlsx, HTML, charts |
+| `reels.py` | daily highlight reels (cached segments, incremental) |
+| `modelcache.py` | keeps all models in one Drive folder |
 | `helpers.py` | notebook review / search utilities |
 
 ## Research notes – what exists and what this adds

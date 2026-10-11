@@ -108,9 +108,9 @@ def build_day_reel(store, cfg, day: str) -> str:
     events = _events_for_day(store, day, cfg.reel_scope)
     if not events:
         return ""
-    seg_dir = os.path.join(cfg.output_dir, "highlights", ".segments")
+    seg_dir = os.path.abspath(os.path.join(cfg.output_dir, "highlights", ".segments"))
     year = day[:4] if day[:4].isdigit() else "unknown"
-    reel = os.path.join(cfg.output_dir, "highlights", year, f"{day}_highlights.mp4")
+    reel = os.path.abspath(os.path.join(cfg.output_dir, "highlights", year, f"{day}_highlights.mp4"))
     os.makedirs(os.path.dirname(reel), exist_ok=True)
     parts = []
     for e in events:
@@ -123,7 +123,7 @@ def build_day_reel(store, cfg, day: str) -> str:
             parts.append((e, seg, d))
     if not parts:
         return ""
-    lst = os.path.join(cfg.work_dir, f"reel_{day}.txt")
+    lst = os.path.abspath(os.path.join(cfg.work_dir, f"reel_{day}.txt"))
     os.makedirs(cfg.work_dir, exist_ok=True)
     with open(lst, "w") as fh:
         fh.writelines("file '" + p.replace("'", r"'\''") + "'\n" for _, p, _ in parts)

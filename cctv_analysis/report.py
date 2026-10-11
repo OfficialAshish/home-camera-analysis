@@ -10,7 +10,6 @@ import html
 import json
 import logging
 import os
-import subprocess
 from collections import Counter, defaultdict
 
 import cv2
@@ -70,19 +69,39 @@ def _vlm_text(v) -> str:
     return d
 
 
-def load(store):
-    events = store.query("SELECT * FROM events ORDER BY COALESCE(start_dt, ''), camera, start_off")
+def _range_sql(start, end, col="start_dt"):
+    """SQL filter for a [start, end] day range (YYYY-MM-DD, inclusive). None = all-time."""
+    if not start:
+        return "", ()
+    return f" WHERE substr({col},1,10) BETWEEN ? AND ?", (start, end)
+
+
+def load(store, start=None, end=None):
+    w, a = _range_sql(start, end)
+    events = store.query("SELECT * FROM events" + w + " ORDER BY COALESCE(start_dt, ''), camera, start_off", a)
     for e in events:
         for k in ("flags", "semantic", "vlm", "snapshots", "objects", "identities"):
             e[k] = _j(e[k], [] if k != "vlm" and k != "objects" else ({} if k == "objects" else None))
     videos = store.query("SELECT * FROM videos ORDER BY camera, start_dt, path")
     tracks = store.query("SELECT t.*, e.camera, e.video_path, e.rel_path, e.start_dt AS ev_dt FROM tracks t "
-                         "JOIN events e USING(event_id) ORDER BY t.first_dt, t.event_id, t.track")
-    faces = store.query("SELECT f.*, e.camera, e.rel_path, e.video_path FROM faces f JOIN events e USING(event_id) "
-                        "ORDER BY f.dt, f.event_id")
-    tamper = store.query("SELECT t.*, v.rel_path, v.camera FROM tamper t JOIN videos v ON v.id=t.video_id "
-                         "ORDER BY t.start_dt")
+                         "JOIN events e USING(event_id)" + w.replace("start_dt", "e.start_dt") +
+                         " ORDER BY t.first_dt, t.event_id, t.track", a)
+    faces = store.query("SELECT f.*, e.camera, e.rel_path, e.video_path FROM faces f JOIN events e USING(event_id)"
+                        + w.replace("start_dt", "e.start_dt") + " ORDER BY f.dt, f.event_id", a)
+    tamper = store.query("SELECT t.*, v.rel_path, v.camera FROM tamper t JOIN videos v ON v.id=t.video_id"
+                         + w.replace("start_dt", "t.start_dt") + " ORDER BY t.start_dt", a)
+    if start:
+        ids = {e["video_id"] for e in events}
+        videos = [v for v in videos if v["id"] in ids or (v["start_dt"] or "")[:10] and start <= (v["start_dt"] or "")[:10] <= end]
     return events, videos, tracks, faces, tamper
+
+
+def hours_text(cfg) -> str:
+    from .rules import hours_enabled
+    days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    closed = ", ".join(days[d] for d in cfg.closed_weekdays or [] if 0 <= d < 7)
+    h = f"{cfg.open_hour}–{cfg.close_hour}" if hours_enabled(cfg) else "not set (open 24 h – no after-hours flag)"
+    return h + (f"; closed on {closed}" if closed else "")
 
 
 def identities_table(tracks):
@@ -106,10 +125,12 @@ def identities_table(tracks):
 
 
 # ====================================================================== Excel
-def build_excel(store, cfg, path):
+def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="CCTV Analysis Report"):
+    """Workbook for all-time (start=None) or for the day range [start, end].
+    `link_base` = folder the final workbook will live in (relative file links)."""
     import xlsxwriter
-    out = cfg.output_dir
-    events, videos, tracks, faces, tamper = load(store)
+    out = link_base or cfg.output_dir
+    events, videos, tracks, faces, tamper = load(store, start, end)
     idt = identities_table(tracks)
     wb = xlsxwriter.Workbook(path, {"strings_to_urls": False, "nan_inf_to_errors": True})
     F = {
@@ -138,23 +159,27 @@ def build_excel(store, cfg, path):
     def image(ws, r, c, src, w=150):
         if not cfg.excel_thumbnails or thumbs_used[0] >= cfg.excel_max_thumbnails:
             return
-        t = _thumb(src, out, 200)
-        if t:
-            img = cv2.imread(t)
-            if img is None:
-                return
-            sc = w / img.shape[1]
-            ws.insert_image(r, c, t, {"x_scale": sc, "y_scale": sc, "x_offset": 2, "y_offset": 2,
-                                      "object_position": 1})
-            thumbs_used[0] += 1
+        try:                       # a broken/missing image must never break the report
+            t = _thumb(src, cfg.output_dir, 200)
+            if t:
+                img = cv2.imread(t)
+                if img is None:
+                    return
+                sc = w / img.shape[1]
+                ws.insert_image(r, c, t, {"x_scale": sc, "y_scale": sc, "x_offset": 2, "y_offset": 2,
+                                          "object_position": 1})
+                thumbs_used[0] += 1
+        except Exception as ex:
+            log.debug("thumbnail skipped for %s: %s", src, ex)
 
     # ---------------------------------------------------------- Read Me
     ws = wb.add_worksheet("Read Me")
     ws.set_column(0, 0, 28)
     ws.set_column(1, 1, 110, F["wrap"])
-    ws.write(0, 0, "CCTV Analysis Report", F["title"])
+    ws.write(0, 0, title, F["title"])
     ws.write(1, 0, "Generated")
-    ws.write(1, 1, dt.datetime.now().strftime("%Y-%m-%d %H:%M"))
+    ws.write(1, 1, dt.datetime.now().strftime("%Y-%m-%d %H:%M") +
+             (f"  ·  covers {start} → {end}" if start else "  ·  covers all analysed footage"))
     rows = [
         ("How to review", "Start with the 'Events' sheet. It is sorted by time; filter the Level column to HIGH/REVIEW "
                           "or sort by Score. Each row cites the exact video file, the offset inside the video "
@@ -169,7 +194,11 @@ def build_excel(store, cfg, path):
         ("Identities", "P#### are anonymous face clusters that persist between runs (same person ≈ same ID). "
                        "Put photos in the known-faces folder (one sub-folder per person) to label staff/owner."),
         ("Review columns", "'Review status' and 'Notes' are for you; they are kept only in this file."),
-        ("Shop hours", f"{cfg.open_hour}–{cfg.close_hour}, timezone {cfg.timezone}. Activity outside = after_hours."),
+        ("Shop hours", hours_text(cfg) + f". Timezone {cfg.timezone}."),
+        ("Highlights", "The 'Highlights' sheet lists every movement inside each day's highlight reel: at which "
+                       "time of the reel it plays, the real clock time, and the original video + offset."),
+        ("Weekly files", "reports/<year>/<dd-dd-Mon-yyyy-W##>.xlsx contain one week each; CCTV_Report.xlsx has "
+                         "everything. Unique_Faces.xlsx lists every distinct face with NEW ones highlighted."),
     ]
     for i, (a, b) in enumerate(rows, 3):
         ws.write(i, 0, a, F["b"])
@@ -186,7 +215,8 @@ def build_excel(store, cfg, path):
         "lights_after_hours": "lights switched on/off while the shop is closed", "semantic_match": "SigLIP-2 image-text match with a suspicious description",
         "vlm_suspicious": "the vision-language model judged the event suspicious",
         "unknown_person_after_hours": "unrecognised face after hours", "repeat_visitor": "same unknown face in ≥ 5 events",
-        "long_event": "event ≥ 5 min with people"}
+        "long_event": "event ≥ 5 min with people",
+        "unauthorized_person": "person who is not a known face on an authorised-only camera"}
     for i, (k, v) in enumerate(WEIGHTS.items(), r0 + 1):
         ws.write(i, 0, k)
         ws.write(i, 1, f"{v} — {meaning.get(k, '')}")
@@ -407,8 +437,10 @@ def build_excel(store, cfg, path):
         ws.write(0, c, h, F["h"])
     ws.set_column(0, 0, 26)
     ws.set_column(2, 2, 19)
-    cur = store.db.execute("SELECT event_id,t_off,dt,cls,conf,track,x1,y1,x2,y2 FROM detections ORDER BY dt, event_id, t_off")
-    csv_path = os.path.join(out, "detections_full.csv")
+    w_, a_ = _range_sql(start, end, "dt")
+    cur = store.db.execute("SELECT event_id,t_off,dt,cls,conf,track,x1,y1,x2,y2 FROM detections" + w_ +
+                           " ORDER BY dt, event_id, t_off", a_)
+    csv_path = os.path.join(cfg.work_dir if start else cfg.output_dir, "detections_full.csv")
     i = 0
     with open(csv_path, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
@@ -482,6 +514,32 @@ def build_excel(store, cfg, path):
     ws.set_column(0, 0, 12)
     ws.set_column(1, 24, 4)
 
+    # ---------------------------------------------------------- Highlights
+    ws = wb.add_worksheet("Highlights")
+    cols = [("Day", 11), ("Reel", 10), ("#", 5), ("Reel time start", 10), ("Reel time end", 10), ("Event ID", 26),
+            ("Camera", 9), ("Clock start", 10), ("Clock end", 10), ("Video file", 34), ("Video offset start", 10),
+            ("Video offset end", 10), ("Level", 9), ("Score", 7), ("People", 7), ("Reasons", 60)]
+    for c, (h, w) in enumerate(cols):
+        ws.write(0, c, h, F["h"])
+        ws.set_column(c, c, w)
+    w_, a_ = _range_sql(start, end, "r.day")
+    segs = store.query("SELECT r.*, e.camera, e.start_dt, e.end_dt, e.rel_path, e.start_off, e.end_off, e.level, "
+                       "e.score, e.max_persons, e.flags FROM reel_segments r JOIN events e USING(event_id)" + w_ +
+                       " ORDER BY r.day, r.idx", a_)
+    for i, g in enumerate(segs, 1):
+        ws.write(i, 0, g["day"])
+        link(ws, i, 1, _rel(g["reel_path"], out), "play reel")
+        ws.write_row(i, 2, [g["idx"], V.fmt_offset(g["reel_start"]), V.fmt_offset(g["reel_end"]), g["event_id"],
+                            g["camera"], (g["start_dt"] or "")[11:], (g["end_dt"] or "")[11:], g["rel_path"],
+                            V.fmt_offset(g["start_off"]), V.fmt_offset(g["end_off"])])
+        ws.write(i, 12, g["level"], F.get(g["level"], F["top"]))
+        ws.write(i, 13, g["score"])
+        ws.write(i, 14, g["max_persons"])
+        ws.write(i, 15, ", ".join(f["flag"] for f in _j(g["flags"], []) or []))
+    if segs:
+        ws.autofilter(0, 0, len(segs), len(cols) - 1)
+    ws.freeze_panes(1, 0)
+
     # ---------------------------------------------------------- Config
     ws = wb.add_worksheet("Config")
     ws.set_column(0, 0, 28)
@@ -494,49 +552,98 @@ def build_excel(store, cfg, path):
 
 
 # ====================================================================== HTML
-def build_html(store, cfg, path, max_embedded=1500):
-    out = cfg.output_dir
+def build_html(store, cfg, path, max_embedded=1500, run_id=""):
+    """Self-contained dashboard: tabs Events / Faces / Highlights / Videos, filters for level, camera,
+    date range, identity, people-only, free text; NEW faces badged."""
+    out = os.path.dirname(path) or cfg.output_dir
     events, videos, tracks, faces, tamper = load(store)
     idt = identities_table(tracks)
+    E = html.escape
+    if not run_id:
+        r = store.query("SELECT run_id FROM runs ORDER BY started DESC LIMIT 1")
+        run_id = r[0]["run_id"] if r else ""
+    new_ids = set()
+    jp = os.path.join(cfg.output_dir, "identities.json")
+    idinfo = {}
+    if os.path.exists(jp):
+        try:
+            with open(jp) as fh:
+                idinfo = {x["id"]: x for x in json.load(fh)}
+            new_ids = {k for k, x in idinfo.items() if run_id and x.get("first_run") == run_id}
+        except Exception:
+            pass
     by_score = sorted(events, key=lambda e: -(e["score"] or 0))
     embed_ids = {e["event_id"] for e in by_score[:max_embedded]}
 
     def b64(src, w=360):
-        t = _thumb(src, out, w)
-        if not t:
+        try:
+            t = _thumb(src, cfg.output_dir, w)
+            if not t:
+                return ""
+            with open(t, "rb") as fh:
+                return "data:image/jpeg;base64," + base64.b64encode(fh.read()).decode()
+        except Exception:
             return ""
-        with open(t, "rb") as fh:
-            return "data:image/jpeg;base64," + base64.b64encode(fh.read()).decode()
 
     cards = []
     for e in events:
         snaps = e["snapshots"] or []
         best = max(snaps, key=lambda s: s.get("persons", 0)) if snaps else {}
         img = b64(best.get("annotated", "")) if e["event_id"] in embed_ids else ""
-        flags = "".join(f"<li><b>{html.escape(f['flag'])}</b> +{f['points']:g}: {html.escape(f['reason'])}</li>"
-                        for f in e["flags"])
-        vlm = html.escape(_vlm_text(e["vlm"]))
-        links = [f'<a href="{html.escape(_rel(e["contact_sheet"], out))}" target="_blank">contact sheet</a>']
+        flags = "".join(f"<li><b>{E(f['flag'])}</b> +{f['points']:g}: {E(f['reason'])}</li>" for f in e["flags"])
+        vlm = E(_vlm_text(e["vlm"]))
+        links = [f'<a href="{E(_rel(e["contact_sheet"], out))}" target="_blank">contact sheet</a>']
         if e["clip_path"]:
-            links.append(f'<a href="{html.escape(_rel(e["clip_path"], out))}" target="_blank">clip</a>')
-        links.append(f'<a href="{html.escape(_rel(e["folder"], out))}" target="_blank">folder</a>')
+            links.append(f'<a href="{E(_rel(e["clip_path"], out))}" target="_blank">clip</a>')
+        links.append(f'<a href="{E(_rel(e["folder"], out))}" target="_blank">folder</a>')
         objs = ", ".join(f"{k}×{n}" for k, n in (e["objects"] or {}).items())
+        ids_ = e["identities"] or []
+        idhtml = " ".join(f'<span class="pid{" new" if i in new_ids else ""}">{E(i)}{" NEW" if i in new_ids else ""}</span>'
+                          for i in ids_)
         cards.append(f"""
-<div class="card" data-level="{e['level']}" data-cam="{html.escape(e['camera'] or '')}" data-date="{(e['start_dt'] or '')[:10]}"
- data-score="{e['score']}" data-people="{e['n_person_tracks']}" data-text="{html.escape((e['event_id'] + ' ' + objs + ' ' + vlm + ' ' + ' '.join(e['identities'] or [])).lower())}">
- <div class="hd"><span class="lv {e['level']}">{e['level']} {e['score']:g}</span> <b>{html.escape(e['event_id'])}</b></div>
- {'<a href="' + html.escape(_rel(best.get('annotated', ''), out)) + '" target="_blank"><img loading="lazy" src="' + img + '"></a>' if img else ''}
+<div class="card" data-level="{e['level']}" data-cam="{E(e['camera'] or '')}" data-date="{(e['start_dt'] or '')[:10]}"
+ data-score="{e['score']}" data-people="{e['n_person_tracks']}" data-ids=" {E(' '.join(ids_))} " data-new="{int(any(i in new_ids for i in ids_))}"
+ data-text="{E((e['event_id'] + ' ' + objs + ' ' + vlm + ' ' + ' '.join(ids_) + ' ' + ' '.join(f['flag'] for f in e['flags'])).lower())}">
+ <div class="hd"><span class="lv {e['level']}">{e['level']} {e['score']:g}</span> <b>{E(e['event_id'])}</b></div>
+ {'<a href="' + E(_rel(best.get('annotated', ''), out)) + '" target="_blank"><img loading="lazy" src="' + img + '"></a>' if img else ''}
  <div class="meta">🕒 {e['start_dt'] or '?'} → {(e['end_dt'] or '')[11:]} ({e['duration']:.0f}s)<br>
- 🎞 {html.escape(e['rel_path'])} @ <b>{V.fmt_offset(e['start_off'])}</b>–{V.fmt_offset(e['end_off'])}<br>
- 👥 {e['max_persons']} max · {e['n_person_tracks']} tracks · faces {e['faces_detected']} {html.escape(', '.join(e['identities'] or []))}<br>
- 📦 {html.escape(objs)}</div>
+ 🎞 {E(e['rel_path'])} @ <b>{V.fmt_offset(e['start_off'])}</b>–{V.fmt_offset(e['end_off'])}<br>
+ 👥 {e['max_persons']} max · {e['n_person_tracks']} tracks · faces {e['faces_detected']} {idhtml}<br>
+ 📦 {E(objs)}</div>
  {'<div class="vlm">🤖 ' + vlm + '</div>' if vlm else ''}
  {'<ul class="flags">' + flags + '</ul>' if flags else ''}
  <div class="links">{' · '.join(links)}</div></div>""")
-    cams = sorted({e["camera"] for e in events})
-    idcards = "".join(
-        f'<div class="id"><img src="{b64(r_["sample"], 120)}"><br><b>{pid}</b> {html.escape(r_["name"])}'
-        f'<br>{len(r_["events"])} events</div>' for pid, r_ in list(idt.items())[:200] if r_["sample"])
+    cams = sorted({e["camera"] for e in events if e["camera"]})
+    days_all = sorted({(e["start_dt"] or "")[:10] for e in events if e["start_dt"]})
+    # faces tab
+    idcards = []
+    for pid, r_ in idt.items():
+        x = idinfo.get(pid, {})
+        isnew = pid in new_ids
+        days = sorted({(t["first_dt"] or "")[:10] for t in tracks if t["identity"] == pid and t["first_dt"]})
+        idcards.append(
+            f'<div class="id{" newcard" if isnew else ""}" data-pid="{pid}"><img src="{b64(r_["sample"] or x.get("sample", ""), 120)}">'
+            f'<br><b>{pid}</b> {E(r_["name"])}{" <span class=badge>NEW</span>" if isnew else ""}'
+            f'<br>{len(r_["events"])} events · {len(days)} day(s)<br><small>{E(", ".join(sorted(r_["cameras"])))}<br>'
+            f'{E((r_["first"] or "")[:16])} → {E((r_["last"] or "")[:16])}</small><br>'
+            f'<a href="#" onclick="showPid(\'{pid}\');return false">show events</a></div>')
+    # highlights tab
+    segs = store.query("SELECT r.*, e.camera, e.start_dt, e.level, e.score FROM reel_segments r "
+                       "JOIN events e USING(event_id) ORDER BY r.day DESC, r.idx")
+    hl = defaultdict(list)
+    for g in segs:
+        hl[g["day"]].append(g)
+    hlhtml = []
+    for d, gs in hl.items():
+        rows = "".join(f"<tr><td>{g['idx']}</td><td>{V.fmt_offset(g['reel_start'])}</td><td>{E(g['camera'] or '')}</td>"
+                       f"<td>{E((g['start_dt'] or '')[11:])}</td><td><span class='lv {g['level']}'>{g['level']} {g['score']:g}</span></td>"
+                       f"<td>{E(g['event_id'])}</td></tr>" for g in gs)
+        hlhtml.append(f'<details><summary><b>{d}</b> – {len(gs)} movement(s), {V.fmt_offset(gs[-1]["reel_end"])} · '
+                      f'<a href="{E(_rel(gs[0]["reel_path"], out))}" target="_blank">▶ play reel</a></summary>'
+                      f'<table><tr><th>#</th><th>Reel time</th><th>Camera</th><th>Clock</th><th>Level</th><th>Event</th></tr>{rows}</table></details>')
+    vrows = "".join(f"<tr><td>{E(v['rel_path'] or '')}</td><td>{E(v['camera'] or '')}</td><td>{E(v['start_dt'] or '')}</td>"
+                    f"<td>{V.fmt_offset(v['duration'] or 0)}</td><td>{v['n_events'] or 0}</td><td>{E(v['status'] or '')}"
+                    f"{(' of ' + E(v['duplicate_of'] or '')) if v['status'] == 'duplicate' else ''}</td></tr>" for v in videos)
     tot = sum(v["duration"] or 0 for v in videos)
     mot = sum(v["motion_seconds"] or 0 for v in videos)
     lv = Counter(e["level"] for e in events)
@@ -546,31 +653,45 @@ def build_html(store, cfg, path, max_embedded=1500):
 header{{background:#1f3864;color:#fff;padding:14px 20px}} h1{{margin:0;font-size:22px}}
 .kpi{{display:flex;flex-wrap:wrap;gap:10px;padding:12px 20px}} .kpi div{{background:#fff;border-radius:8px;padding:10px 14px;box-shadow:0 1px 3px #0002}}
 .kpi b{{display:block;font-size:20px}} .bar{{padding:6px 20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center;position:sticky;top:0;background:#f4f6faee;z-index:2}}
+.tabs{{padding:0 20px;display:flex;gap:4px}} .tabs button{{border:0;padding:8px 16px;border-radius:8px 8px 0 0;background:#dde3ee;cursor:pointer;font-size:14px}}
+.tabs button.on{{background:#1f3864;color:#fff}} .tab{{display:none}} .tab.on{{display:block}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;padding:12px 20px}}
 .card{{background:#fff;border-radius:10px;box-shadow:0 1px 4px #0002;padding:10px;font-size:13px}} .card img{{width:100%;border-radius:6px}}
 .lv{{padding:2px 8px;border-radius:10px;font-weight:bold;font-size:12px}} .HIGH{{background:{LEVEL_COLORS['HIGH']}}} .REVIEW{{background:{LEVEL_COLORS['REVIEW']}}}
 .LOW{{background:{LEVEL_COLORS['LOW']}}} .NORMAL{{background:{LEVEL_COLORS['NORMAL']}}} .meta{{margin:6px 0;line-height:1.5}}
 .vlm{{background:#eef3ff;border-radius:6px;padding:6px;margin:4px 0}} .flags{{margin:4px 0;padding-left:18px;color:#a33}}
-.ids{{display:flex;flex-wrap:wrap;gap:8px;padding:0 20px 20px}} .id{{background:#fff;border-radius:8px;padding:6px;text-align:center;font-size:12px}} .id img{{width:90px;border-radius:6px}}
-h2{{padding:0 20px;font-size:18px}}</style></head><body>
-<header><h1>CCTV Analysis Report</h1><div>Generated {dt.datetime.now():%Y-%m-%d %H:%M} · shop hours {cfg.open_hour}–{cfg.close_hour}</div></header>
+.pid{{background:#e8ecf3;border-radius:6px;padding:0 5px;font-size:12px}} .pid.new,.badge{{background:#ffeb3b;font-weight:bold;border-radius:6px;padding:0 5px}}
+.ids{{display:flex;flex-wrap:wrap;gap:10px;padding:12px 20px}} .id{{background:#fff;border-radius:8px;padding:8px;text-align:center;font-size:12px;width:150px;box-shadow:0 1px 3px #0002}}
+.id img{{width:110px;border-radius:6px}} .newcard{{outline:3px solid #ffd600}}
+table{{border-collapse:collapse;background:#fff;margin:6px 0;font-size:13px}} td,th{{border:1px solid #ddd;padding:3px 8px;text-align:left}}
+details{{background:#fff;margin:8px 20px;padding:8px 12px;border-radius:8px}} .pad{{padding:12px 20px}}</style></head><body>
+<header><h1>CCTV Analysis Report</h1><div>Generated {dt.datetime.now():%Y-%m-%d %H:%M} · shop hours {E(hours_text(cfg))}</div></header>
 <div class="kpi"><div><b>{len(videos)}</b>videos</div><div><b>{tot / 3600:.1f} h</b>footage</div>
 <div><b>{mot / 3600:.1f} h</b>with motion</div><div><b>{len(events)}</b>events</div>
-<div><b>{lv.get('HIGH', 0)}</b>HIGH</div><div><b>{lv.get('REVIEW', 0)}</b>REVIEW</div><div><b>{len(idt)}</b>face IDs</div><div><b>{len(tamper)}</b>tamper</div></div>
-<div class="bar">Level <select id="lv"><option value="">all</option><option>HIGH</option><option>REVIEW</option><option>LOW</option><option>NORMAL</option></select>
-Camera <select id="cam"><option value="">all</option>{''.join(f'<option>{html.escape(c)}</option>' for c in cams)}</select>
-Date <input id="date" type="date"> <label><input id="ppl" type="checkbox"> people only</label>
-Search <input id="q" placeholder="person, P0003, bag, theft…"> Sort <select id="sort"><option value="time">time</option><option value="score">score</option></select>
+<div><b>{lv.get('HIGH', 0)}</b>HIGH</div><div><b>{lv.get('REVIEW', 0)}</b>REVIEW</div><div><b>{len(idt)}</b>face IDs</div>
+<div><b>{len(new_ids)}</b>NEW faces (last run)</div><div><b>{len(tamper)}</b>tamper</div></div>
+<div class="tabs"><button class="on" data-t="ev">Events</button><button data-t="fa">Faces</button><button data-t="hl">Highlights</button><button data-t="vi">Videos</button></div>
+<div id="ev" class="tab on"><div class="bar">Level <select id="lv"><option value="">all</option><option>HIGH</option><option>REVIEW</option><option>LOW</option><option>NORMAL</option></select>
+Camera <select id="cam"><option value="">all</option>{''.join(f'<option>{E(c)}</option>' for c in cams)}</select>
+From <input id="d1" type="date" value="{days_all[0] if days_all else ''}"> to <input id="d2" type="date" value="{days_all[-1] if days_all else ''}">
+Person <input id="pid" size="6" placeholder="P0003"> <label><input id="ppl" type="checkbox"> people only</label> <label><input id="nw" type="checkbox"> new faces</label>
+Search <input id="q" placeholder="bag, theft, running…"> Sort <select id="sort"><option value="time">time</option><option value="score">score</option></select>
 <span id="cnt"></span></div>
-<div class="grid" id="grid">{''.join(cards)}</div>
-<h2>Face identities</h2><div class="ids">{idcards}</div>
+<div class="grid" id="grid">{''.join(cards)}</div></div>
+<div id="fa" class="tab"><div class="pad">Yellow = face first seen in the latest run. Full list with first/last seen: <b>Unique_Faces.xlsx</b>.</div><div class="ids">{''.join(idcards)}</div></div>
+<div id="hl" class="tab"><div class="pad">One reel per day with every movement from all cameras (running clock + source burned in).</div>{''.join(hlhtml) or '<div class="pad">no reels yet</div>'}</div>
+<div id="vi" class="tab"><div class="pad"><table><tr><th>Video</th><th>Camera</th><th>Start</th><th>Duration</th><th>Events</th><th>Status</th></tr>{vrows}</table></div></div>
 <script>
-const g=document.getElementById('grid'),cards=[...g.children];
-function f(){{const lv=document.getElementById('lv').value,cam=document.getElementById('cam').value,d=document.getElementById('date').value,
-q=document.getElementById('q').value.toLowerCase(),p=document.getElementById('ppl').checked,s=document.getElementById('sort').value;let n=0;
+const g=document.getElementById('grid'),cards=[...g.children],$=i=>document.getElementById(i);
+function f(){{const lv=$('lv').value,cam=$('cam').value,d1=$('d1').value,d2=$('d2').value,pid=$('pid').value.trim().toUpperCase(),
+q=$('q').value.toLowerCase(),p=$('ppl').checked,nw=$('nw').checked,s=$('sort').value;let n=0;
 let arr=cards.slice(); if(s=='score') arr.sort((a,b)=>b.dataset.score-a.dataset.score); arr.forEach(c=>g.appendChild(c));
-cards.forEach(c=>{{const ok=(!lv||c.dataset.level==lv)&&(!cam||c.dataset.cam==cam)&&(!d||c.dataset.date==d)&&(!p||c.dataset.people>0)&&(!q||c.dataset.text.includes(q));
-c.style.display=ok?'':'none'; n+=ok;}}); document.getElementById('cnt').textContent=n+' events';}}
+cards.forEach(c=>{{const d=c.dataset.date;const ok=(!lv||c.dataset.level==lv)&&(!cam||c.dataset.cam==cam)&&(!d1||!d||d>=d1)&&(!d2||!d||d<=d2)
+&&(!pid||c.dataset.ids.includes(' '+pid+' '))&&(!p||c.dataset.people>0)&&(!nw||c.dataset.new==1)&&(!q||c.dataset.text.includes(q));
+c.style.display=ok?'':'none'; n+=ok;}}); $('cnt').textContent=n+' events';}}
+function tab(t){{document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.id==t));document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.t==t));}}
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>tab(b.dataset.t));
+function showPid(p){{$('pid').value=p;tab('ev');f();}}
 document.querySelectorAll('.bar select,.bar input').forEach(e=>e.addEventListener('input',f)); f();
 </script></body></html>"""
     with open(path, "w", encoding="utf-8") as fh:
@@ -608,10 +729,12 @@ def build_charts(store, cfg):
     ax.set_xlim(0, 24)
     ax.set_xticks(range(0, 25, 2))
     ax.set_xlabel("hour of day")
-    o = [int(x) for x in cfg.open_hour.split(":")]
-    c_ = [int(x) for x in cfg.close_hour.split(":")]
-    ax.axvspan(0, o[0] + o[1] / 60, color="#000", alpha=0.06)
-    ax.axvspan(c_[0] + c_[1] / 60, 24, color="#000", alpha=0.06)
+    from .rules import hours_enabled
+    if hours_enabled(cfg):
+        o = [int(x) for x in cfg.open_hour.split(":")[:2]] + [0]
+        c_ = [int(x) for x in cfg.close_hour.split(":")[:2]] + [0]
+        ax.axvspan(0, o[0] + o[1] / 60, color="#000", alpha=0.06)
+        ax.axvspan(c_[0] + c_[1] / 60, 24, color="#000", alpha=0.06)
     ax.set_title("Event timeline (colour = level, shaded = closed hours)")
     ax.invert_yaxis()
     fig.tight_layout()
@@ -632,74 +755,246 @@ def build_charts(store, cfg):
     return paths
 
 
-# ================================================================ highlight reel
-def build_highlights(store, cfg) -> str:
-    ff = V.FFMPEG
-    if not ff:
-        return ""
-    events = [e for e in load(store)[0] if e["clip_path"] and os.path.exists(e["clip_path"])
-              and e["level"] in ("HIGH", "REVIEW")]
-    events = sorted(events, key=lambda e: -(e["score"] or 0))[: cfg.highlight_max_events]
-    events.sort(key=lambda e: e["start_dt"] or "")
-    if not events:
-        return ""
-    tmp = os.path.join(cfg.work_dir, "hl")
-    os.makedirs(tmp, exist_ok=True)
-    parts = []
-    for i, e in enumerate(events):
-        p = os.path.join(tmp, f"{i:04d}.mp4")
-        txt = f"{e['level']} {e['score']:g} {e['camera']} {e['start_dt'] or ''}".replace(":", r"\:")
-        vf = ("scale=960:540:force_original_aspect_ratio=decrease,pad=960:540:(ow-iw)/2:(oh-ih)/2,fps=15,"
-              f"drawtext=text='{txt}':x=10:y=10:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.6")
-        cmd = [ff, "-nostdin", "-y", "-v", "error", "-i", e["clip_path"], "-t", "30", "-vf", vf, "-an",
-               "-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-pix_fmt", "yuv420p", p]
-        r = subprocess.run(cmd, capture_output=True)
-        if r.returncode != 0:      # drawtext unavailable -> plain
-            cmd[cmd.index("-vf") + 1] = vf.split(",drawtext")[0]
-            r = subprocess.run(cmd, capture_output=True)
-        if r.returncode == 0:
-            parts.append(p)
-    if not parts:
-        return ""
-    lst = os.path.join(tmp, "list.txt")
-    with open(lst, "w") as fh:
-        fh.writelines(f"file '{p}'\n" for p in parts)
-    out = os.path.join(cfg.output_dir, "highlight_reel.mp4")
-    subprocess.run([ff, "-nostdin", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy",
-                    "-movflags", "+faststart", out], capture_output=True)
-    for p in parts:
-        os.remove(p)
-    log.info("Highlight reel: %s (%d events)", out, len(parts))
-    return out if os.path.exists(out) else ""
-
-
-def build_reports(store, cfg) -> dict:
-    out = {}
-    try:
-        out["excel"] = os.path.join(cfg.output_dir, "CCTV_Report.xlsx")
-        tmp = os.path.join(cfg.work_dir, "CCTV_Report.xlsx")
-        build_excel(store, cfg, tmp)
-        import shutil
+# ================================================================ unique faces
+def build_unique_faces(store, cfg, path, run_id=""):
+    """Unique_Faces.xlsx – one row per distinct person (face identity), NEW faces highlighted,
+    plus the log of new-face alerts and unauthorised-person alerts."""
+    import xlsxwriter
+    jp = os.path.join(cfg.output_dir, "identities.json")
+    ids = []
+    if os.path.exists(jp):
         try:
-            shutil.copyfile(tmp, out["excel"])
-        except PermissionError:      # workbook open elsewhere -> timestamped copy
-            out["excel"] = out["excel"].replace(".xlsx", f"_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
-            shutil.copyfile(tmp, out["excel"])
-    except Exception as e:
-        log.exception("Excel report failed: %s", e)
+            with open(jp) as fh:
+                ids = json.load(fh)
+        except Exception as e:
+            log.warning("identities.json unreadable: %s", e)
+    if not run_id:
+        r = store.query("SELECT run_id FROM runs ORDER BY started DESC LIMIT 1")
+        run_id = r[0]["run_id"] if r else ""
+    base = os.path.dirname(path)
+    stats = defaultdict(lambda: {"days": set(), "events": set(), "cams": set(), "first": None, "last": None})
+    for t in store.query("SELECT t.identity, t.event_id, t.first_dt, e.camera FROM tracks t JOIN events e "
+                         "USING(event_id) WHERE t.identity IS NOT NULL AND t.identity != ''"):
+        st = stats[t["identity"]]
+        st["events"].add(t["event_id"])
+        st["cams"].add(t["camera"])
+        if t["first_dt"]:
+            st["days"].add(t["first_dt"][:10])
+            st["first"] = min(filter(None, [st["first"], t["first_dt"]]))
+            st["last"] = max(filter(None, [st["last"], t["first_dt"]]))
+    evinfo = {e["event_id"]: e for e in store.query("SELECT event_id, rel_path, start_off, start_dt, camera FROM events")}
+    first_alert = {}
+    for a in store.query("SELECT identity, t_off, video FROM face_alerts WHERE kind='new_face' ORDER BY id"):
+        first_alert.setdefault(a["identity"], a)
+    wb = xlsxwriter.Workbook(path, {"strings_to_urls": False})
+    H = wb.add_format({"bold": True, "bg_color": "#1F3864", "font_color": "white", "text_wrap": True, "border": 1})
+    T = wb.add_format({"valign": "top"})
+    NEW = wb.add_format({"valign": "top", "bg_color": "#FFEB3B", "bold": True})
+    KNOWN = wb.add_format({"valign": "top", "bg_color": "#C6EFCE"})
+    LINK = wb.add_format({"font_color": "blue", "underline": 1, "valign": "top"})
+    n_img = [0]
+
+    def image(ws, r, c, src, w=80):
+        if not src or n_img[0] >= cfg.excel_max_thumbnails:
+            return
+        try:
+            t = _thumb(src, cfg.output_dir, 160)
+            img = cv2.imread(t) if t else None
+            if img is not None:
+                sc = w / img.shape[1]
+                ws.insert_image(r, c, t, {"x_scale": sc, "y_scale": sc, "x_offset": 2, "y_offset": 2,
+                                          "object_position": 1})
+                n_img[0] += 1
+        except Exception:
+            pass
+
+    def link(ws, r, c, target, text):
+        if target:
+            ws.write_url(r, c, "external:" + _rel(target, base), LINK, text)
+
+    rows = []
+    for rec in ids:
+        st = stats.get(rec["id"], {"days": set(), "events": set(rec.get("events") or []), "cams": set(),
+                                   "first": None, "last": None})
+        n_ev = len(st["events"] or set(rec.get("events") or []))
+        n_days = len(st["days"])
+        if rec.get("first_run") == run_id and run_id:
+            status = "NEW"
+        elif rec.get("name"):
+            status = "Known"
+        elif n_days >= 3 or n_ev >= 5:
+            status = "Regular"
+        else:
+            status = "Seen before"
+        rows.append((rec, st, n_ev, n_days, status))
+    order = {"NEW": 0, "Known": 2, "Regular": 1, "Seen before": 1}
+    rows.sort(key=lambda r: (order[r[4]], -(len(r[1]["days"])), r[0]["id"]))
+
+    ws = wb.add_worksheet("Unique Faces")
+    cols = [("Face", 13), ("Identity", 9), ("Status", 11), ("Name", 14), ("First seen", 19), ("Last seen", 19),
+            ("Days seen", 7), ("Events", 7), ("Face samples", 8), ("Cameras", 16), ("First camera", 10),
+            ("First event", 26), ("First video", 34), ("Offset", 9), ("First run", 16), ("Face file", 8)]
+    for c, (h, w) in enumerate(cols):
+        ws.write(0, c, h, H)
+        ws.set_column(c, c, w)
+    for i, (rec, st, n_ev, n_days, status) in enumerate(rows, 1):
+        fmt = NEW if status == "NEW" else KNOWN if status == "Known" else T
+        fe = evinfo.get(rec.get("first_event") or "", {})
+        cams = sorted(set(st["cams"]) | set(rec.get("cameras") or []) | ({rec["first_camera"]} if rec.get("first_camera") else set()))
+        vals = ["", rec["id"], status, rec.get("name") or "", st["first"] or rec.get("first_seen") or "",
+                st["last"] or rec.get("last_seen") or "", n_days, n_ev, rec.get("count", 0), ", ".join(cams),
+                rec.get("first_camera") or fe.get("camera", ""), rec.get("first_event") or "",
+                fe.get("rel_path", ""),
+                V.fmt_offset(first_alert[rec["id"]]["t_off"] or 0) if rec["id"] in first_alert
+                else (V.fmt_offset(fe["start_off"]) if fe else ""), rec.get("first_run") or ""]
+        for c, v in enumerate(vals):
+            ws.write(i, c, v, fmt)
+        image(ws, i, 0, rec.get("sample"))
+        link(ws, i, 15, rec.get("sample"), "face")
+        ws.set_row(i, 82)
+    if rows:
+        ws.autofilter(0, 0, len(rows), len(cols) - 1)
+    ws.freeze_panes(1, 2)
+
+    for sheet, kind in (("New faces log", "new_face"), ("Unauthorized alerts", "unauthorized")):
+        ws = wb.add_worksheet(sheet)
+        cols = [("Face", 13), ("Person", 13), ("Identity", 9), ("Run", 16), ("Time", 19), ("Camera", 10),
+                ("Event ID", 26), ("Video file", 34), ("Offset", 9), ("Note", 40)]
+        for c, (h, w) in enumerate(cols):
+            ws.write(0, c, h, H)
+            ws.set_column(c, c, w)
+        al = store.query("SELECT * FROM face_alerts WHERE kind=? ORDER BY id DESC", (kind,))
+        for i, a in enumerate(al, 1):
+            fmt = NEW if a["run_id"] == run_id else T
+            ws.write_row(i, 2, [a["identity"], a["run_id"], a["dt"] or "", a["camera"], a["event_id"], a["video"],
+                                V.fmt_offset(a["t_off"] or 0), a["note"]], fmt)
+            image(ws, i, 0, a["face_crop"])
+            image(ws, i, 1, a["person_crop"], 60)
+            ws.set_row(i, 82)
+        if not al:
+            ws.write(1, 2, "none")
+        ws.freeze_panes(1, 0)
+    wb.close()
+    log.info("Unique faces workbook: %s (%d identities, %d new this run)", path, len(rows),
+             sum(r[4] == "NEW" for r in rows))
+    return path
+
+
+# ================================================================ weeks
+_MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def week_bounds(day: str, week_start: str = "sunday"):
+    d = dt.date.fromisoformat(day)
+    shift = (d.weekday() + 1) % 7 if week_start.lower().startswith("sun") else d.weekday()
+    s = d - dt.timedelta(days=shift)
+    return s, s + dt.timedelta(days=6)
+
+
+def week_label(s: dt.date, e: dt.date, week_start: str = "sunday") -> str:
+    """11-17-Oct-2026-W41 · 27-Sep-03-Oct-2026-W39 · 28-Dec-2025-03-Jan-2026-W52"""
+    if week_start.lower().startswith("sun"):
+        wk = int(s.strftime("%U"))          # a Sunday is always in week >= 1
+    else:
+        wk = s.isocalendar()[1]
+    if s.year != e.year:
+        rng = f"{s.day:02d}-{_MON[s.month - 1]}-{s.year}-{e.day:02d}-{_MON[e.month - 1]}-{e.year}"
+    elif s.month != e.month:
+        rng = f"{s.day:02d}-{_MON[s.month - 1]}-{e.day:02d}-{_MON[e.month - 1]}-{e.year}"
+    else:
+        rng = f"{s.day:02d}-{e.day:02d}-{_MON[s.month - 1]}-{e.year}"
+    return f"{rng}-W{wk:02d}"
+
+
+def _publish(tmp, final):
+    import shutil
+    os.makedirs(os.path.dirname(final), exist_ok=True)
+    try:
+        shutil.copyfile(tmp, final)
+    except PermissionError:      # workbook open elsewhere -> timestamped copy
+        final = final.replace(".xlsx", f"_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
+        shutil.copyfile(tmp, final)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    return final
+
+
+def build_weekly(store, cfg, new_days=None) -> list:
+    days = sorted({r["d"] for r in store.query("SELECT DISTINCT substr(start_dt,1,10) d FROM events "
+                                               "WHERE start_dt IS NOT NULL")})
+    weeks = {}
+    for d in days:
+        try:
+            s, e = week_bounds(d, cfg.week_start)
+        except ValueError:
+            continue
+        weeks.setdefault(s, e)
+    touched = set()
+    for d in new_days or []:
+        try:
+            touched.add(week_bounds(d, cfg.week_start)[0])
+        except ValueError:
+            pass
+    out = []
+    for s, e in sorted(weeks.items()):
+        label = week_label(s, e, cfg.week_start)
+        final = os.path.join(cfg.output_dir, "reports", str(s.year), label + ".xlsx")
+        if new_days is not None and s not in touched and os.path.exists(final):
+            continue                       # untouched week, already built
+        tmp = os.path.join(cfg.work_dir, label + ".xlsx")
+        try:
+            build_excel(store, cfg, tmp, s.isoformat(), e.isoformat(), link_base=os.path.dirname(final),
+                        title=f"CCTV weekly report {label}")
+            out.append(_publish(tmp, final))
+        except Exception as ex:
+            log.exception("weekly report %s failed: %s", label, ex)
+    return out
+
+
+def build_reports(store, cfg, new_days=None, run_id="") -> dict:
+    """Build every output. `new_days` = days touched by this run (None = rebuild what is missing)."""
+    out = {}
+    os.makedirs(cfg.work_dir, exist_ok=True)
+    if cfg.make_highlight_reel:
+        try:
+            from .reels import build_reels
+            days = None if new_days is None else set(new_days)
+            if days is not None:       # also fill days that never got a reel (e.g. ffmpeg failed earlier)
+                have = {r["day"] for r in store.query("SELECT DISTINCT day FROM reel_segments")}
+                days |= {(r["d"] or "unknown-date") for r in
+                         store.query("SELECT DISTINCT substr(start_dt,1,10) d FROM events")} - have
+            out["highlights"] = build_reels(store, cfg, days)
+        except Exception as e:
+            log.exception("highlight reels failed: %s", e)
+    if cfg.master_report:
+        try:
+            tmp = os.path.join(cfg.work_dir, "CCTV_Report.xlsx")
+            build_excel(store, cfg, tmp)
+            out["excel"] = _publish(tmp, os.path.join(cfg.output_dir, "CCTV_Report.xlsx"))
+        except Exception as e:
+            log.exception("Excel report failed: %s", e)
+    if cfg.weekly_reports:
+        try:
+            out["weekly"] = build_weekly(store, cfg, new_days)
+        except Exception as e:
+            log.exception("weekly reports failed: %s", e)
+    if cfg.use_faces:
+        try:
+            tmp = os.path.join(cfg.work_dir, "Unique_Faces.xlsx")
+            build_unique_faces(store, cfg, tmp, run_id)
+            out["unique_faces"] = _publish(tmp, os.path.join(cfg.output_dir, "Unique_Faces.xlsx"))
+        except Exception as e:
+            log.exception("Unique faces workbook failed: %s", e)
     if cfg.make_html:
         try:
             out["html"] = os.path.join(cfg.output_dir, "report.html")
-            build_html(store, cfg, out["html"])
+            build_html(store, cfg, out["html"], run_id=run_id)
         except Exception as e:
             log.exception("HTML report failed: %s", e)
     try:
         out["charts"] = build_charts(store, cfg)
     except Exception as e:
         log.exception("charts failed: %s", e)
-    if cfg.make_highlight_reel:
-        try:
-            out["highlights"] = build_highlights(store, cfg)
-        except Exception as e:
-            log.exception("highlight reel failed: %s", e)
     return out

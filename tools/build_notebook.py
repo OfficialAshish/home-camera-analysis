@@ -28,11 +28,15 @@ This notebook scans every recording in a Google Drive folder and produces a **re
 | **Faces**: detected, quality-scored, cropped and **grouped into identities across days** (P0001, P0002 …); known staff can be labelled | *Faces*, *Face Identities* |
 | **Suspicion score 0–100** with plain-English reasons: after-hours activity, camera tampering, loitering, running, crowding, hidden face, hands up, restricted zone, weapon-like objects, AI scene match | *Events* (sortable) |
 | **AI description** of each flagged event (Qwen3-VL vision-language model) | *Events* → *AI description* |
-| Activity **heatmaps**, timeline charts, an interactive **HTML dashboard** and a **highlight reel** of the top events | output folder |
+| **Daily highlight reel** – every movement of the day from all cameras, with running clock + source burnt in, and a timing table (reel time → camera, clock, video, offset) | `highlights/<year>/<date>_highlights.mp4`, *Highlights* sheet |
+| **Weekly workbooks** (`reports/2026/11-17-Oct-2026-W41.xlsx`) plus an all-time `CCTV_Report.xlsx` | `reports/` |
+| **Unique faces** workbook: every distinct person with photo, first/last seen, days, cameras; **NEW faces highlighted** and alerted at the end of each run | `Unique_Faces.xlsx` |
+| **Authorised-only cameras**: anyone who is not a known face there is flagged | *Events*, *Unauthorized alerts* |
+| Activity **heatmaps**, timeline charts and an interactive **HTML dashboard** (Events / Faces / Highlights / Videos tabs) | output folder |
 | **Search**: free text (*"man in a helmet"*) or **by photo** (find every visit of a person) | cells at the end |
 
 **How to use:** `Runtime → Change runtime type → T4 GPU`, check the settings in **Step 3**, then `Runtime → Run all`.
-Re-running is safe and incremental: finished videos are skipped and reports always cover everything analysed so far.
+Re-running is safe and incremental: finished videos **and duplicate copies of them** are skipped, only the affected days/weeks are rebuilt, and models are kept in Drive (`MODEL_CACHE_DIR`) so they download only once.
 """)
 
 md("## Step 1 · GPU check & Google Drive")
@@ -63,8 +67,8 @@ md("""
 The next cells write the `cctv_analysis` package to `/content` (same code as the GitHub repo, so the notebook is fully self-contained).
 You don't need to read or edit them — collapse the section and move on.
 """)
-order = ["__init__", "config", "video_io", "motion", "detector", "faces", "semantic", "vlm", "rules",
-         "annotate", "storage", "report", "pipeline", "helpers", "__main__"]
+order = ["__init__", "config", "modelcache", "video_io", "motion", "detector", "faces", "semantic", "vlm", "rules",
+         "annotate", "storage", "reels", "report", "pipeline", "helpers", "__main__"]
 for name in order:
     src = open(os.path.join(ROOT, "cctv_analysis", name + ".py"), encoding="utf-8").read()
     code(f"%%writefile /content/cctv_analysis/{name}.py\n" + src)
@@ -88,7 +92,10 @@ Recommended defaults are already filled in. The only must-change items are the t
 
 * **INPUT_DIR** – the Drive folder your DVR/NVR syncs to (sub-folders are scanned; a sub-folder name or `ch01`/`cam2` in the file name becomes the camera name).
 * **SPEED_PRESET** – `balanced` is recommended on a T4. `fast` ≈ 2–3× quicker (lighter models, no pose); `accurate` for small faces / far cameras.
-* **Shop hours** – activity outside them is flagged as *after hours*.
+* **FOLDER_KEYWORDS** *(optional)* – only scan folders whose name matches, comma-separated, e.g. `6-oct, 7-oct` or `ch01`. Dates match in any common style (`6-oct` also matches `06Oct2026`, `2026-10-06`, `Oct 6`; it never matches `16-oct`). Blank = all folders.
+* **Shop hours** *(optional)* – blank = open 24 h (nothing is flagged just for the time of day). Fill in e.g. `09:00` / `21:30` to flag activity outside them as *after hours*.
+* **AUTHORIZED_ONLY_CAMERAS** *(optional)* – comma-separated cameras (e.g. `ch03`) where only known faces are allowed; anyone else raises an alert.
+* **MODEL_CACHE_DIR** – AI models are saved here on first use and reused by every later run.
 * **KNOWN_FACES_DIR** *(optional)* – `known_faces/Owner/*.jpg`, `known_faces/Staff_Ravi/*.jpg` … these people get named instead of P-numbers and lower the score of their events.
 """)
 code("""
@@ -98,8 +105,14 @@ OUTPUT_DIR = "/content/drive/MyDrive/CCTV_Analysis"  #@param {type:"string"}
 KNOWN_FACES_DIR = "/content/drive/MyDrive/CCTV_known_faces"  #@param {type:"string"}
 SPEED_PRESET = "balanced"  #@param ["fast", "balanced", "accurate"]
 TIMEZONE = "Asia/Kolkata"  #@param {type:"string"}
-OPEN_HOUR = "09:00"  #@param {type:"string"}
-CLOSE_HOUR = "21:30"  #@param {type:"string"}
+FOLDER_KEYWORDS = ""  #@param {type:"string"}
+OPEN_HOUR = ""  #@param {type:"string"}
+CLOSE_HOUR = ""  #@param {type:"string"}
+AUTHORIZED_ONLY_CAMERAS = ""  #@param {type:"string"}
+MODEL_CACHE_DIR = "/content/drive/MyDrive/CCTV_models"  #@param {type:"string"}
+DAILY_HIGHLIGHT_REELS = True  #@param {type:"boolean"}
+REEL_CONTENT = "all"  #@param ["all", "people", "flagged"]
+WEEK_STARTS_ON = "sunday"  #@param ["sunday", "monday"]
 MOTION_SENSITIVITY = 0.5  #@param {type:"slider", min:0.1, max:0.9, step:0.05}
 USE_FACES = True  #@param {type:"boolean"}
 USE_AI_DESCRIPTIONS = True  #@param {type:"boolean"}
@@ -147,6 +160,10 @@ cfg = Config(
     save_clips=SAVE_CLIPS != "none", clip_scope=SAVE_CLIPS if SAVE_CLIPS != "none" else "flagged",
     only_newer_than_days=ONLY_NEWER_THAN_DAYS, max_videos=MAX_VIDEOS, reprocess=REPROCESS_ALL,
     max_runtime_minutes=STOP_AFTER_MINUTES,
+    folder_keywords=[k.strip() for k in FOLDER_KEYWORDS.split(",") if k.strip()],
+    authorized_only_cameras=[k.strip() for k in AUTHORIZED_ONLY_CAMERAS.split(",") if k.strip()],
+    model_cache_dir=MODEL_CACHE_DIR, make_highlight_reel=DAILY_HIGHLIGHT_REELS, reel_scope=REEL_CONTENT,
+    week_start=WEEK_STARTS_ON,
     zones=ZONES, ignore_regions=IGNORE_REGIONS, filename_time_patterns=FILENAME_TIME_PATTERNS,
     time_overrides=TIME_OVERRIDES, **PRESETS[SPEED_PRESET])
 for k, v in EXTRA.items():
@@ -188,6 +205,22 @@ TOP_N = 10  #@param {type:"integer"}
 _ = show_events(cfg, where="level IN ('HIGH','REVIEW')", order="score DESC", limit=TOP_N)
 """, hide=True)
 code("""
+#@title 🆕 New faces from the latest run (never seen before)
+from cctv_analysis.helpers import show_new_faces
+_ = show_new_faces(cfg)
+""", hide=True)
+code("""
+#@title 🎛️ Review dashboard – filter by date range, camera, level, person, text
+from cctv_analysis.helpers import review_dashboard
+review_dashboard(cfg)
+""", hide=True)
+code("""
+#@title 🎬 Daily highlight reels (leave DAY blank to list all days)
+DAY = ""  #@param {type:"string"}
+from cctv_analysis.helpers import show_highlights
+_ = show_highlights(cfg, DAY or None)
+""", hide=True)
+code("""
 #@title Browse any events (SQL filter)
 # Examples:  "after_hours=1"   "camera='ch01' AND start_dt LIKE '2026-10-11%'"   "identities LIKE '%P0003%'"
 #            "objects LIKE '%handbag%'"   "start_dt BETWEEN '2026-10-11 20:00' AND '2026-10-11 23:59'"
@@ -215,9 +248,11 @@ for p in ["charts/timeline.png", "charts/people_by_hour.png"]:
     f = os.path.join(cfg.output_dir, p)
     if os.path.exists(f):
         display(Image(f, width=1000))
-print("Excel report :", os.path.join(cfg.output_dir, "CCTV_Report.xlsx"))
+print("Excel (all)  :", os.path.join(cfg.output_dir, "CCTV_Report.xlsx"))
+print("Weekly Excel :", os.path.join(cfg.output_dir, "reports"))
+print("Unique faces :", os.path.join(cfg.output_dir, "Unique_Faces.xlsx"))
 print("HTML report  :", os.path.join(cfg.output_dir, "report.html"), "(download the output folder to open it with images)")
-print("Highlights   :", os.path.join(cfg.output_dir, "highlight_reel.mp4"))
+print("Highlights   :", os.path.join(cfg.output_dir, "highlights"))
 print("Event folders:", os.path.join(cfg.output_dir, "events"))
 """, hide=True)
 code("""
@@ -238,6 +273,8 @@ md("""
 * **Missed movement?** Raise `MOTION_SENSITIVITY` (0.6–0.7) or `EXTRA = {"min_motion_area": 0.0008}`.
 * **Wrong clock time?** Check Step 4. Supported names include Hikvision `ch01_20261011143000`, Dahua `2026-10-11/…/14.30.00-14.45.00.dav`, `NVR_ch2_main_20261011093015_…`, `11-10-2026_08-00-00`. Otherwise the AI reads the burnt-in DVR clock (when AI descriptions are on), then file time is used.
 * **Same person gets several IDs?** Lower `EXTRA = {"face_match_threshold": 0.38}`; **different people merged?** raise it to 0.48.
+* **Only some days?** `FOLDER_KEYWORDS = "6-oct, 7-oct"`. A folder that doesn't match is listed in the log so you can see why.
+* **Duplicates:** a file whose content was already analysed (same video copied/renamed) is skipped and listed under *Videos* as `duplicate`.
 * **Faster runs:** `SPEED_PRESET="fast"`, `AI_DESCRIBE="flagged"`, `SAVE_CLIPS="flagged"`.
 * **`.dav` files** (Dahua) are read natively by ffmpeg; if one fails, export from the DVR as MP4.
 * The score is a triage aid: always confirm by watching the cited clip / original video at the given offset.

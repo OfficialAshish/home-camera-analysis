@@ -7,6 +7,7 @@ import gc
 import json
 import logging
 import os
+import sys
 import re
 import time
 import traceback
@@ -38,7 +39,7 @@ def setup_logging(out_dir: str, verbose: bool = True):
     fh.setFormatter(fmt)
     log.addHandler(fh)
     if verbose:
-        sh = logging.StreamHandler()
+        sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         log.addHandler(sh)
     log.propagate = False

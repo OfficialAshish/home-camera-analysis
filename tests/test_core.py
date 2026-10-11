@@ -54,7 +54,7 @@ def test_point_in_poly():
 
 
 def test_scoring_explainable():
-    cfg = Config()
+    cfg = Config(open_hour="09:00", close_hour="21:30")
     ev = {"start": 0, "end": 30, "start_dt": dt.datetime(2026, 10, 12, 23, 0), "max_persons": 1,
           "motion_peak": 0.05, "lighting_changes": 1}
     tracks = [{"cls": "person", "duration": 120, "max_conf": 0.9, "zones": {"cash_counter": 12},
@@ -90,3 +90,40 @@ def test_motion_on_synthetic(tmp_path):
     assert any(t["kind"].startswith("blackout") for t in r.tamper)
     assert r.osd_mask is not None                       # burnt-in clock found
     assert any(69 <= t <= 73 for t in r.lighting_changes)
+
+
+def test_hours_optional():
+    c = Config(timezone="Asia/Kolkata")            # no shop hours -> nothing is "after hours"
+    assert not R.hours_enabled(c)
+    assert not R.is_after_hours(dt.datetime(2026, 10, 11, 3, 0), c)
+    c.closed_weekdays = [6]                         # but a closed weekday still counts
+    assert R.is_after_hours(dt.datetime(2026, 10, 11, 12, 0), c)   # 11 Oct 2026 = Sunday
+
+
+def test_folder_keywords():
+    yes = [("6-oct", "6 oct"), ("06Oct2026", "6-oct"), ("2026-10-06", "6-oct"), ("Oct 6", "6-oct"),
+           ("Ch01_cam", "ch01"), ("october-2026", "oct")]
+    no = [("16-oct", "6-oct"), ("6-nov", "6-oct"), ("backup", "oct")]
+    assert all(V.folder_matches(n, k) for n, k in yes)
+    assert not any(V.folder_matches(n, k) for n, k in no)
+
+
+def test_week_labels():
+    from cctv_analysis.report import week_bounds, week_label
+    cases = {("2026-10-14", "sunday"): "11-17-Oct-2026-W41",
+             ("2026-10-01", "sunday"): "27-Sep-03-Oct-2026-W39",
+             ("2027-01-01", "sunday"): "27-Dec-2026-02-Jan-2027-W52",
+             ("2026-10-14", "monday"): "12-18-Oct-2026-W42"}
+    for (d, ws), exp in cases.items():
+        assert week_label(*week_bounds(d, ws), ws) == exp
+
+
+def test_quick_hash_detects_copies(tmp_path):
+    a = tmp_path / "a.mp4"
+    a.write_bytes(os.urandom(5 << 20))
+    b = tmp_path / "sub" / "renamed.mp4"
+    b.parent.mkdir()
+    b.write_bytes(a.read_bytes())
+    c = tmp_path / "c.mp4"
+    c.write_bytes(a.read_bytes()[:-1] + b"x")
+    assert V.quick_hash(str(a)) == V.quick_hash(str(b)) != V.quick_hash(str(c))

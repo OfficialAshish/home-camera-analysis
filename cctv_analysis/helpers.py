@@ -6,7 +6,7 @@ import base64
 import json
 import os
 from collections import defaultdict
-from typing import List, Optional
+from typing import Optional
 
 import cv2
 import numpy as np
@@ -205,8 +205,127 @@ def summary(cfg: Config):
     e = st.query("SELECT level, COUNT(*) n FROM events GROUP BY level")
     print(f"Videos: {v['n']}  footage: {(v['d'] or 0) / 3600:.2f} h  motion: {(v['m'] or 0) / 3600:.2f} h")
     print("Events by level:", {r["level"]: r["n"] for r in e})
-    bad = st.query("SELECT rel_path, error FROM videos WHERE status!='done'")
+    dup = st.query("SELECT rel_path, duplicate_of FROM videos WHERE status='duplicate'")
+    if dup:
+        print(f"Duplicates skipped: {len(dup)}")
+        for d in dup[:20]:
+            print("  ", d["rel_path"], "= copy of", d["duplicate_of"])
+    nf = st.query("SELECT COUNT(*) n FROM face_alerts WHERE kind='new_face'")[0]["n"]
+    ua = st.query("SELECT COUNT(*) n FROM face_alerts WHERE kind='unauthorized'")[0]["n"]
+    print(f"New-face alerts (all runs): {nf}   unauthorised-person alerts: {ua}")
+    bad = st.query("SELECT rel_path, error FROM videos WHERE status NOT IN ('done','duplicate')")
     if bad:
         print("Problems:")
         for b in bad:
             print("  ", b["rel_path"], (b["error"] or "")[:200])
+
+
+def _q(v: str) -> str:
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def show_new_faces(cfg: Config, run_id: Optional[str] = None, limit: int = 60):
+    """Faces never seen before (default: in the latest run), with where/when they appeared."""
+    st = _store(cfg)
+    if run_id is None:
+        r = st.query("SELECT run_id FROM face_alerts WHERE kind='new_face' ORDER BY id DESC LIMIT 1")
+        run_id = r[0]["run_id"] if r else ""
+    rows = st.query("SELECT * FROM face_alerts WHERE kind='new_face' AND run_id=? ORDER BY dt LIMIT ?",
+                    (run_id, int(limit)))
+    if not rows:
+        print("No new faces" + (f" in run {run_id}" if run_id else "") + ".")
+        return rows
+    print(f"{len(rows)} new face(s) in run {run_id}:")
+    tiles = []
+    for a in rows:
+        im = cv2.imread(a["face_crop"]) if a["face_crop"] else None
+        src = ""
+        if im is not None:
+            ok, buf = cv2.imencode(".jpg", cv2.resize(im, (112, int(112 * im.shape[0] / im.shape[1]))))
+            src = "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
+        tiles.append(f"<div style='display:inline-block;width:150px;margin:4px;padding:6px;background:#fff8c4;"
+                     f"border-radius:8px;text-align:center;font-size:12px;vertical-align:top'>"
+                     f"{'<img src=' + chr(34) + src + chr(34) + ' width=112><br>' if src else ''}<b>{a['identity']}</b>"
+                     f"<br>{a['dt'] or ''}<br>{a['camera']}<br>{a['video']} @ {V.fmt_offset(a['t_off'] or 0)}</div>")
+    _html("".join(tiles))
+    return rows
+
+
+def show_highlights(cfg: Config, day: Optional[str] = None, play: bool = True):
+    """List the daily highlight reels (or one day's reel with its timing table)."""
+    st = _store(cfg)
+    if day is None:
+        rows = st.query("SELECT day, COUNT(*) n, MAX(reel_end) d, reel_path FROM reel_segments GROUP BY day ORDER BY day DESC")
+        for r in rows:
+            print(f"{r['day']}: {r['n']:4d} movement(s), {V.fmt_offset(r['d'] or 0)}  ->  {r['reel_path']}")
+        if not rows:
+            print("No highlight reels yet.")
+        return rows
+    rows = st.query("SELECT r.*, e.camera, e.start_dt, e.level, e.score, e.rel_path, e.start_off FROM reel_segments r "
+                    "JOIN events e USING(event_id) WHERE r.day=? ORDER BY r.idx", (day,))
+    if not rows:
+        print("No reel for", day)
+        return rows
+    _html("<table><tr><th>#</th><th>Reel time</th><th>Camera</th><th>Clock</th><th>Level</th><th>Video @ offset</th></tr>" +
+          "".join(f"<tr><td>{r['idx']}</td><td>{V.fmt_offset(r['reel_start'])}</td><td>{r['camera']}</td>"
+                  f"<td>{(r['start_dt'] or '')[11:]}</td><td>{r['level']} {r['score']:g}</td>"
+                  f"<td>{r['rel_path']} @ {V.fmt_offset(r['start_off'])}</td></tr>" for r in rows) + "</table>")
+    if play:
+        _html(_video_tag(rows[0]["reel_path"], 720) or f"Reel: {rows[0]['reel_path']} (too large to embed – open it from Drive)")
+    return rows
+
+
+def review_dashboard(cfg: Config):
+    """Interactive filter panel (date range, camera, level, person ID, text, new faces) for the notebook."""
+    try:
+        import ipywidgets as W
+        from IPython.display import display, clear_output
+    except Exception:
+        print("ipywidgets not available – use show_events(cfg, where=...) instead.")
+        return
+    st = _store(cfg)
+    cams = [r["camera"] for r in st.query("SELECT DISTINCT camera FROM events ORDER BY camera") if r["camera"]]
+    days = [r["d"] for r in st.query("SELECT DISTINCT substr(start_dt,1,10) d FROM events WHERE start_dt IS NOT NULL ORDER BY d")]
+    import datetime as _dt
+    d1 = W.DatePicker(description="From", value=_dt.date.fromisoformat(days[0]) if days else None)
+    d2 = W.DatePicker(description="To", value=_dt.date.fromisoformat(days[-1]) if days else None)
+    cam = W.Dropdown(options=["(all)"] + cams, description="Camera")
+    lvl = W.SelectMultiple(options=["HIGH", "REVIEW", "LOW", "NORMAL"], value=("HIGH", "REVIEW"), description="Level", rows=4)
+    pid = W.Text(description="Person ID", placeholder="P0003")
+    txt = W.Text(description="Contains", placeholder="flag / object / AI text, e.g. running")
+    ppl = W.Checkbox(description="people only", value=False)
+    nwf = W.Checkbox(description="new faces only", value=False)
+    srt = W.Dropdown(options=[("score", "score DESC"), ("time", "start_dt")], description="Sort")
+    lim = W.IntSlider(description="Max", value=10, min=1, max=100)
+    clips = W.Checkbox(description="embed clips", value=True)
+    btn = W.Button(description="Show events", button_style="primary")
+    out = W.Output()
+
+    def go(_=None):
+        cond = ["1=1"]
+        if d1.value:
+            cond.append(f"substr(start_dt,1,10) >= {_q(d1.value.isoformat())}")
+        if d2.value:
+            cond.append(f"substr(start_dt,1,10) <= {_q(d2.value.isoformat())}")
+        if cam.value != "(all)":
+            cond.append(f"camera = {_q(cam.value)}")
+        if lvl.value:
+            cond.append("level IN (" + ",".join(_q(v) for v in lvl.value) + ")")
+        if pid.value.strip():
+            cond.append(f"identities LIKE {_q('%' + pid.value.strip().upper() + '%')}")
+        if txt.value.strip():
+            t = _q("%" + txt.value.strip() + "%")
+            cond.append(f"(flags LIKE {t} OR objects LIKE {t} OR vlm LIKE {t} OR semantic LIKE {t})")
+        if ppl.value:
+            cond.append("n_person_tracks > 0")
+        if nwf.value:
+            cond.append("event_id IN (SELECT event_id FROM face_alerts WHERE kind='new_face')")
+        with out:
+            clear_output()
+            n = st.query("SELECT COUNT(*) n FROM events WHERE " + " AND ".join(cond))[0]["n"]
+            print(f"{n} matching event(s); showing up to {lim.value}")
+            show_events(cfg, where=" AND ".join(cond), order=srt.value, limit=lim.value, clips=clips.value)
+
+    btn.on_click(go)
+    display(W.VBox([W.HBox([d1, d2, cam]), W.HBox([lvl, W.VBox([pid, txt, W.HBox([ppl, nwf])])]),
+                    W.HBox([srt, lim, clips, btn]), out]))

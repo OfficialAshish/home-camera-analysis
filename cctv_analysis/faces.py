@@ -193,7 +193,7 @@ class IdentityDB:
         """Return (identity_id, similarity, known_name). `self.last_new` tells whether
         the identity was created by this call (a face never seen before)."""
         self.last_new = False
-        known_name = ""
+        known_name, known_sim = "", -1.0
         for k in self.known:
             s = float(np.dot(emb, k["emb"]))
             if s >= self.known_thr and (not known_name or s > known_sim):
