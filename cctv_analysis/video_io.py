@@ -22,6 +22,22 @@ except ImportError:  # pragma: no cover
 
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
+HW_DECODE = "auto"          # auto | cuda | none   (set from Config.hw_decode)
+_HW_STATE = {}              # path-independent cache: {"cuda": True/False}
+
+
+def _cuda_present() -> bool:
+    return shutil.which("nvidia-smi") is not None or os.path.exists("/dev/nvidia0")
+
+
+def _hw_args() -> List[str]:
+    if HW_DECODE == "none" or not FFMPEG:
+        return []
+    if HW_DECODE == "auto" and not _cuda_present():
+        return []
+    if _HW_STATE.get("cuda") is False:
+        return []
+    return ["-hwaccel", "cuda"]
 
 # --------------------------------------------------------------------- files
 
@@ -157,7 +173,8 @@ def iter_frames(path: str, fps: float, width: int, start: float = 0.0,
         w = int(width or sw) // 2 * 2
         h = int(round(sh * w / sw)) // 2 * 2
         ch = 1 if gray else 3
-        cmd = [FFMPEG, "-nostdin", "-v", "error", "-threads", "2"]
+        hw = _hw_args()
+        cmd = [FFMPEG, "-nostdin", "-v", "error", *hw, "-threads", "0"]
         if start > 0:
             cmd += ["-ss", f"{start:.3f}"]
         cmd += [*_input_args(path), "-i", path]
@@ -174,7 +191,23 @@ def iter_frames(path: str, fps: float, width: int, start: float = 0.0,
             while True:
                 buf = proc.stdout.read(nbytes)
                 if len(buf) < nbytes:
+                    if i == 0 and hw:
+                        proc.kill()
+                        prev = _HW_STATE.get("cuda")
+                        _HW_STATE["cuda"] = False      # retry on CPU
+                        got = 0
+                        for item in iter_frames(path, fps, width, start, duration, gray, src_size):
+                            got += 1
+                            yield item
+                        if not got:                    # empty range, not a GPU problem
+                            if prev is None:
+                                _HW_STATE.pop("cuda", None)
+                            else:
+                                _HW_STATE["cuda"] = prev
+                        return
                     break
+                if i == 0 and hw:
+                    _HW_STATE["cuda"] = True
                 frame = np.frombuffer(buf, np.uint8).reshape((h, w) if gray else (h, w, 3))
                 produced = True
                 yield start + i / fps, frame

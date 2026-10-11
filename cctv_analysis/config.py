@@ -105,6 +105,7 @@ class Config:
 
     # -------------------------------------------------------- detection pass
     device: str = "auto"                         # auto | cuda | cpu
+    hw_decode: str = "auto"                      # auto | cuda | none  (NVDEC video decoding on Colab GPUs)
     detector_model: str = "yolo26s.pt"           # falls back to yolo11s.pt
     detector_fallbacks: List[str] = field(default_factory=lambda: ["yolo11s.pt", "yolov8s.pt"])
     pose_model: str = "yolo26n-pose.pt"

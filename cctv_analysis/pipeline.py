@@ -68,6 +68,7 @@ class Analyzer:
         cfg.save(os.path.join(cfg.output_dir, "config_used.json"))
         self.store = Store(os.path.join(cfg.work_dir, "analysis.db"), os.path.join(cfg.output_dir, "analysis.db"))
         from .detector import resolve_device
+        V.HW_DECODE = cfg.hw_decode
         self.device = resolve_device(cfg.device)
         log.info("Device: %s", self.device)
         self._det = self._faces = self._sem = self._vlm = None
