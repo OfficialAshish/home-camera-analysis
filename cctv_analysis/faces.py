@@ -24,8 +24,13 @@ MODELS = {
 
 
 def fetch(key: str) -> str:
-    os.makedirs(CACHE, exist_ok=True)
-    dst = os.path.join(CACHE, os.path.basename(MODELS[key][0]))
+    from . import modelcache
+    cache = modelcache.sub("opencv")
+    dst = os.path.join(cache, os.path.basename(MODELS[key][0]))
+    old = os.path.join(CACHE, os.path.basename(MODELS[key][0]))
+    if not os.path.exists(dst) and os.path.exists(old) and os.path.getsize(old) > 100_000:
+        import shutil
+        shutil.copyfile(old, dst)
     if os.path.exists(dst) and os.path.getsize(dst) > 100_000:
         return dst
     for url in MODELS[key]:
@@ -149,7 +154,10 @@ class IdentityDB:
                 self.ids, self.emb = [], []
 
     def enroll_known(self, engine: FaceEngine, folder: str) -> int:
-        if not folder or not os.path.isdir(folder):
+        if not folder:
+            return 0
+        if not os.path.isdir(folder):
+            log.info("Known-faces folder not found (%s) – continuing without known people", folder)
             return 0
         n = 0
         for name in sorted(os.listdir(folder)):
@@ -158,8 +166,12 @@ class IdentityDB:
             label = name if os.path.isdir(d) else os.path.splitext(name)[0]
             embs = []
             for f in files:
-                img = cv2.imread(f)
+                try:
+                    img = cv2.imread(f)
+                except Exception:
+                    img = None
                 if img is None:
+                    log.warning("known face image unreadable, skipped: %s", f)
                     continue
                 faces = sorted(engine.detect_full(img), key=lambda x: -x["score"] * (x["box"][2] - x["box"][0]))
                 if faces:
@@ -173,8 +185,14 @@ class IdentityDB:
         log.info("Enrolled %d known people", n)
         return n
 
-    def assign(self, emb: np.ndarray, when: str, sample: str = "", event_id: str = "") -> tuple:
-        """Return (identity_id, similarity, known_name)."""
+    run_id = ""
+    last_new = False
+
+    def assign(self, emb: np.ndarray, when: str, sample: str = "", event_id: str = "",
+               camera: str = "") -> tuple:
+        """Return (identity_id, similarity, known_name). `self.last_new` tells whether
+        the identity was created by this call (a face never seen before)."""
+        self.last_new = False
         known_name = ""
         for k in self.known:
             s = float(np.dot(emb, k["emb"]))
@@ -198,10 +216,15 @@ class IdentityDB:
             rec["first_seen"] = min(rec["first_seen"], when)
             if known_name and not rec.get("name"):
                 rec["name"] = known_name
+            cams = rec.setdefault("cameras", [])
+            if camera and camera not in cams:
+                cams.append(camera)
             return rec["id"], best, rec.get("name", "") or known_name
         new_id = f"P{len(self.ids) + 1:04d}"
         self.ids.append({"id": new_id, "count": 1, "first_seen": when, "last_seen": when,
-                         "sample": sample, "name": known_name, "events": [event_id] if event_id else []})
+                         "sample": sample, "name": known_name, "events": [event_id] if event_id else [],
+                         "first_run": self.run_id, "first_event": event_id, "first_camera": camera})
+        self.last_new = True
         self.emb.append(emb)
         return new_id, 1.0, known_name
 

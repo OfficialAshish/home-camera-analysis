@@ -35,6 +35,17 @@ CREATE TABLE IF NOT EXISTS detections (
   x1 REAL, y1 REAL, x2 REAL, y2 REAL);
 CREATE TABLE IF NOT EXISTS tamper (
   video_id INT, start_off REAL, end_off REAL, start_dt TEXT, kind TEXT);
+CREATE TABLE IF NOT EXISTS file_hashes (
+  path TEXT PRIMARY KEY, size INT, mtime INT, qhash TEXT);
+CREATE TABLE IF NOT EXISTS reel_segments (
+  day TEXT, idx INT, event_id TEXT, reel_start REAL, reel_end REAL, seg_path TEXT, reel_path TEXT,
+  PRIMARY KEY (day, idx));
+CREATE TABLE IF NOT EXISTS face_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT, kind TEXT, identity TEXT, dt TEXT, camera TEXT,
+  event_id TEXT, video TEXT, t_off REAL, face_crop TEXT, person_crop TEXT, note TEXT);
+CREATE TABLE IF NOT EXISTS runs (
+  run_id TEXT PRIMARY KEY, started TEXT, finished TEXT, videos INT, events INT, new_faces INT,
+  duplicates INT, notes TEXT);
 CREATE INDEX IF NOT EXISTS ix_ev_video ON events(video_id);
 CREATE INDEX IF NOT EXISTS ix_det_ev ON detections(event_id);
 """
@@ -50,7 +61,19 @@ class Store:
         self.db = sqlite3.connect(local_path)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
         self.db.commit()
+
+    # columns added in later versions – keeps databases from older runs working
+    _ADDED = {"videos": {"qhash": "TEXT", "duplicate_of": "TEXT", "run_id": "TEXT"},
+              "events": {"run_id": "TEXT"}}
+
+    def _migrate(self):
+        for table, cols in self._ADDED.items():
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for c, typ in cols.items():
+                if c not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {c} {typ}")
 
     # ------------------------------------------------------------------ util
     @staticmethod
@@ -77,6 +100,19 @@ class Store:
         return [dict(r) for r in self.db.execute(sql, args).fetchall()]
 
     # --------------------------------------------------------------- videos
+    def cached_hash(self, path: str, size: int, mtime: int):
+        r = self.db.execute("SELECT qhash FROM file_hashes WHERE path=? AND size=? AND mtime=?",
+                            (path, size, mtime)).fetchone()
+        return r["qhash"] if r else None
+
+    def put_hash(self, path: str, size: int, mtime: int, qhash: str):
+        self.db.execute("INSERT OR REPLACE INTO file_hashes VALUES (?,?,?,?)", (path, size, mtime, qhash))
+
+    def done_with_hash(self, qhash: str, exclude_path: str = ""):
+        r = self.db.execute("SELECT path FROM videos WHERE qhash=? AND status='done' AND path!=?",
+                            (qhash, exclude_path)).fetchone()
+        return r["path"] if r else None
+
     def video_done(self, path: str, fingerprint: str) -> bool:
         r = self.db.execute("SELECT status, fingerprint FROM videos WHERE path=?", (path,)).fetchone()
         return bool(r and r["status"] == "done" and r["fingerprint"] == fingerprint)

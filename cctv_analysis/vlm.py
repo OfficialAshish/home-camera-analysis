@@ -30,11 +30,13 @@ class VLM:
                 dtype = torch.float32 if small else torch.float16
         else:
             dtype = torch.float32
+        from . import modelcache
+        cd = modelcache.hf_dir()
         self.model = AutoModelForImageTextToText.from_pretrained(
-            cfg.vlm_model, dtype=dtype, device_map="auto" if cuda else None).eval()
+            cfg.vlm_model, dtype=dtype, device_map="auto" if cuda else None, cache_dir=cd).eval()
         if not cuda:
             self.model.to("cpu")
-        self.proc = AutoProcessor.from_pretrained(cfg.vlm_model)
+        self.proc = AutoProcessor.from_pretrained(cfg.vlm_model, cache_dir=cd)
 
     def ask(self, img_bgr: np.ndarray, prompt: str, max_new_tokens: int = 160, max_side: int = 1280) -> str:
         from PIL import Image

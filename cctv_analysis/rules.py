@@ -10,6 +10,7 @@ import numpy as np
 WEIGHTS = {
     "after_hours": 30,
     "camera_tamper": 45,
+    "unauthorized_person": 35,
     "weapon_like_object": 40,
     "restricted_zone": 25,
     "loitering": 15,
@@ -51,9 +52,15 @@ def _hm(s: str) -> dt.time:
     return dt.time(int(h), int(m))
 
 
+def hours_enabled(cfg) -> bool:
+    return bool((cfg.open_hour or "").strip() and (cfg.close_hour or "").strip())
+
+
 def is_after_hours(when: Optional[dt.datetime], cfg) -> bool:
     if when is None:
         return False
+    if not hours_enabled(cfg):            # no shop hours given -> every hour is normal
+        return when.weekday() in (cfg.closed_weekdays or [])
     if when.weekday() in (cfg.closed_weekdays or []):
         return True
     o, c = _hm(cfg.open_hour), _hm(cfg.close_hour)
@@ -72,8 +79,18 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
 
     persons = [t for t in tracks if t["cls"] == "person" and t["duration"] >= 0.5]
     start_dt = ev.get("start_dt")
+    cam = ev.get("camera", "")
+    auth = cfg.authorized_only_cameras or []
+    if persons and ("*" in auth or cam in auth):
+        strangers = [t for t in persons if not t.get("known_name")]
+        if strangers:
+            ids = sorted({t["identity"] for t in strangers if t.get("identity")})
+            nof = sum(1 for t in strangers if not t.get("identity"))
+            add("unauthorized_person", f"authorised-only camera '{cam}': {len(strangers)} person(s) not in known faces"
+                + (f" (unknown {', '.join(ids)})" if ids else "") + (f"; {nof} without a visible face" if nof else ""))
     if is_after_hours(start_dt, cfg) and (persons or ev.get("motion_peak", 0) > 0.01):
-        add("after_hours", f"activity at {start_dt:%H:%M} outside shop hours {cfg.open_hour}-{cfg.close_hour}"
+        add("after_hours", f"activity at {start_dt:%H:%M} outside shop hours "
+            f"{cfg.open_hour or '-'}-{cfg.close_hour or '-'}"
             + (" with people" if persons else " (no person detected)"), 1.0 if persons else 0.5)
     for tp in tamper or []:
         if tp["start"] <= ev["end"] and tp["end"] >= ev["start"]:
@@ -124,7 +141,8 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
         add("long_event", f"event lasted {(ev['end'] - ev['start']) / 60:.0f} min")
     staff_only = persons and all(t.get("known_name") for t in persons if t.get("identity"))
     score = sum(f["points"] for f in flags)
-    if staff_only and any(t.get("identity") for t in persons) and not weapons:
+    if staff_only and any(t.get("identity") for t in persons) and not weapons and \
+            not any(f["flag"] == "unauthorized_person" for f in flags):
         score *= 0.5
         flags.append({"flag": "known_people_only", "points": 0, "reason": "only known/staff faces – score halved"})
     return float(min(100.0, score)), flags

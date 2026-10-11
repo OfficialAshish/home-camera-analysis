@@ -67,6 +67,12 @@ class Config:
     reprocess: bool = False                      # ignore the "already done" cache
     max_runtime_minutes: float = 0               # stop cleanly (and still build reports) after this; 0 = no limit
     known_faces_dir: str = ""                    # folder/<Name>/*.jpg (staff, owner)
+    # Only analyse sub-folders whose name matches one of these (any depth), e.g.
+    # ["6-oct", "12oct"]; date-like keywords also match "2026-10-06", "06Oct26", "Oct 6"...
+    # Empty = every video under input_dir.
+    folder_keywords: List[str] = field(default_factory=list)
+    dedupe: bool = True                          # skip identical copies (content hash), even renamed/moved
+    model_cache_dir: str = "/content/drive/MyDrive/CCTV_models"   # models saved here once, reused next runs
 
     # ------------------------------------------------------------ time info
     timezone: str = "Asia/Kolkata"
@@ -80,12 +86,15 @@ class Config:
     camera_name_source: str = "auto"             # auto | folder | filename | none
 
     # ------------------------------------------------------------ shop rules
-    open_hour: str = "09:00"                     # activity outside -> after-hours
-    close_hour: str = "21:00"
+    open_hour: str = ""                          # "" = open 24h (no after-hours flag); e.g. "09:00"
+    close_hour: str = ""
     closed_weekdays: List[int] = field(default_factory=list)  # 0=Mon .. 6=Sun
     # Restricted zones per camera, normalised polygon coords (0..1).
     # {"*": {"cash_counter": [[0.6,0.5],[1,0.5],[1,1],[0.6,1]]}, "ch02": {...}}
     zones: Dict[str, Dict[str, List[List[float]]]] = field(default_factory=dict)
+    # Cameras where only known (enrolled) people are allowed, e.g. ["warehouse"] or ["*"].
+    # Anyone else (unknown face or no face visible) is flagged "unauthorized_person".
+    authorized_only_cameras: List[str] = field(default_factory=list)
     # Areas to ignore for motion (timestamp overlay, swaying plants, TV screens).
     ignore_regions: Dict[str, List[List[List[float]]]] = field(default_factory=dict)
     auto_mask_osd: bool = True                   # auto-detect burnt-in clock text
@@ -165,8 +174,14 @@ class Config:
     excel_thumbnails: bool = True
     excel_max_thumbnails: int = 3000
     make_html: bool = True
-    make_highlight_reel: bool = True
-    highlight_max_events: int = 40
+    master_report: bool = True                   # all-time CCTV_Report.xlsx (in addition to weekly files)
+    weekly_reports: bool = True                  # reports/<year>/11-17-Oct-2026-W41.xlsx
+    week_start: str = "sunday"                   # sunday (US week numbers, W41 = 11-17 Oct 2026) | monday (ISO)
+    make_highlight_reel: bool = True             # one reel per day with every movement of all cameras
+    reel_scope: str = "all"                      # all | people | flagged
+    reel_max_event_seconds: float = 0            # 0 = whole event; else cap each event's part of the reel
+    reel_width: int = 960
+    reel_fps: int = 15
     drive_links: bool = True                     # resolve Google Drive file links in Colab
 
     @classmethod

@@ -41,16 +41,70 @@ def _hw_args() -> List[str]:
 
 # --------------------------------------------------------------------- files
 
+_MONTHS = {m: i for i, m in enumerate(
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def _norm(t: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", t.lower())
+
+
+def day_month(text: str):
+    """(day, month) from things like '6-oct', '06Oct26', 'Oct 6', '2026-10-06', '06-10-2026', '20261006'."""
+    t = text.lower()
+    m = re.search(r"(?<!\d)(\d{1,2})\s*[-_. ]?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*", t)
+    if m:
+        return int(m.group(1)), _MONTHS[m.group(2)]
+    m = re.search(r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*[-_. ]?\s*(\d{1,2})(?!\d)", t)
+    if m:
+        return int(m.group(2)), _MONTHS[m.group(1)]
+    m = re.search(r"(?<!\d)(20\d{2})[-_.]?([01]\d)[-_.]?([0-3]\d)(?!\d)", t)
+    if m:
+        return int(m.group(3)), int(m.group(2))
+    m = re.search(r"(?<!\d)([0-3]?\d)[-_.]([01]?\d)[-_.](20\d{2}|\d{2})(?!\d)", t)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def folder_matches(name: str, keyword: str) -> bool:
+    kw = keyword.strip()
+    if not kw:
+        return False
+    n, k = _norm(name), _norm(kw)
+    if k and k in n:
+        i = n.find(k)
+        # avoid '6oct' matching '16oct'
+        if not (k[0].isdigit() and i > 0 and n[i - 1].isdigit()):
+            return True
+    dk, dn = day_month(kw), day_month(name)
+    return bool(dk and dn and dk == dn)
+
+
 def find_videos(cfg) -> List[str]:
+    import logging
+    log = logging.getLogger("cctv")
     exts = {e.lower() for e in cfg.extensions}
     out = []
     if os.path.isfile(cfg.input_dir):
         return [cfg.input_dir]
+    if not os.path.isdir(cfg.input_dir):
+        raise FileNotFoundError(f"input folder not found: {cfg.input_dir}")
+    kws = [k for k in (cfg.folder_keywords or []) if k and k.strip()]
     cutoff = time.time() - cfg.only_newer_than_days * 86400 if cfg.only_newer_than_days else None
+    out_abs = os.path.abspath(cfg.output_dir)
+    seen_dirs = set()
     for root, dirs, files in os.walk(cfg.input_dir):
-        # never descend into our own output folder
-        dirs[:] = sorted(d for d in dirs
-                         if os.path.abspath(os.path.join(root, d)) != os.path.abspath(cfg.output_dir))
+        dirs[:] = sorted(d for d in dirs if os.path.abspath(os.path.join(root, d)) != out_abs
+                         and not d.startswith("."))
+        rel_parts = [] if os.path.abspath(root) == os.path.abspath(cfg.input_dir) else \
+            os.path.relpath(root, cfg.input_dir).split(os.sep)
+        if rel_parts:
+            seen_dirs.add(rel_parts[-1])
+        if kws and not any(folder_matches(part, k) for part in rel_parts for k in kws):
+            if not cfg.recursive:
+                break
+            continue
         for f in sorted(files):
             if os.path.splitext(f)[1].lower() not in exts:
                 continue
@@ -70,9 +124,24 @@ def find_videos(cfg) -> List[str]:
             out.append(p)
         if not cfg.recursive:
             break
+    if kws and not out:
+        log.warning("No sub-folder matched %s. Folders found: %s", kws, ", ".join(sorted(seen_dirs)[:60]))
     if cfg.max_videos:
         out = out[: cfg.max_videos]
     return out
+
+
+def quick_hash(path: str, chunk: int = 2 << 20) -> str:
+    """Content fingerprint of size + first/middle/last 2 MB (fast even on Drive);
+    identical copies under other names/folders get the same value."""
+    import hashlib
+    size = os.path.getsize(path)
+    h = hashlib.sha1(str(size).encode())
+    with open(path, "rb") as fh:
+        for off in sorted({0, max(0, size // 2 - chunk // 2), max(0, size - chunk)}):
+            fh.seek(off)
+            h.update(fh.read(chunk))
+    return h.hexdigest()
 
 
 def file_fingerprint(path: str) -> str:

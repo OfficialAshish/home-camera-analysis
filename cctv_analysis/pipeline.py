@@ -53,9 +53,16 @@ def _iso(d: Optional[dt.datetime]) -> Optional[str]:
 
 
 def _imwrite(path: str, img: np.ndarray, q: int = 88) -> str:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, q])
-    return path
+    """Write an image; never let a single failed image stop the analysis."""
+    try:
+        if img is None or getattr(img, "size", 0) == 0:
+            return ""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if cv2.imwrite(path, img, [cv2.IMWRITE_JPEG_QUALITY, q]):
+            return path
+    except Exception as e:
+        log.warning("could not save image %s: %s", path, e)
+    return ""
 
 
 class Analyzer:
@@ -66,6 +73,10 @@ class Analyzer:
         os.makedirs(cfg.work_dir, exist_ok=True)
         setup_logging(cfg.output_dir)
         cfg.save(os.path.join(cfg.output_dir, "config_used.json"))
+        from . import modelcache
+        modelcache.init(cfg.model_cache_dir)
+        self.run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.new_days, self.new_faces = set(), []
         self.store = Store(os.path.join(cfg.work_dir, "analysis.db"), os.path.join(cfg.output_dir, "analysis.db"))
         from .detector import resolve_device
         V.HW_DECODE = cfg.hw_decode
@@ -99,6 +110,7 @@ class Analyzer:
                 self._faces = FaceEngine(self.cfg)
                 self.idb = IdentityDB(os.path.join(self.cfg.output_dir, "identities"),
                                       self.cfg.face_match_threshold, self.cfg.known_face_threshold)
+                self.idb.run_id = self.run_id
                 self.idb.enroll_known(self._faces, self.cfg.known_faces_dir)
             except Exception as e:
                 log.warning("Face analysis disabled: %s", e)
@@ -135,15 +147,60 @@ class Analyzer:
         return self.vlm.read_clock(f) if f is not None else None
 
     # ------------------------------------------------------------------- run
+    def _select(self, videos):
+        """Skip finished videos (same path+size+mtime, or same content elsewhere) and duplicates."""
+        cfg, st = self.cfg, self.store
+        todo, stats, seen = [], Counter(), {}
+        t0 = time.time()
+        for p in videos:
+            try:
+                fst = os.stat(p)
+            except OSError:
+                continue
+            if not cfg.reprocess and st.video_done(p, V.file_fingerprint(p)):
+                stats["already_done"] += 1
+                continue
+            qh = None
+            if cfg.dedupe:
+                qh = st.cached_hash(p, fst.st_size, int(fst.st_mtime))
+                if qh is None:
+                    try:
+                        qh = V.quick_hash(p)
+                        st.put_hash(p, fst.st_size, int(fst.st_mtime), qh)
+                    except OSError as e:
+                        log.warning("cannot read %s: %s", p, e)
+                        continue
+                other = seen.get(qh) or (None if cfg.reprocess else st.done_with_hash(qh, p))
+                if other:
+                    stats["duplicates"] += 1
+                    log.info("  duplicate skipped: %s  (same content as %s)", p, other)
+                    rel = os.path.relpath(p, cfg.input_dir)
+                    old = st.db.execute("SELECT id FROM videos WHERE path=?", (p,)).fetchone()
+                    row = {"path": p, "rel_path": rel, "fingerprint": V.file_fingerprint(p), "qhash": qh,
+                           "status": "duplicate", "duplicate_of": os.path.relpath(other, cfg.input_dir),
+                           "size_mb": fst.st_size / 1e6, "run_id": self.run_id,
+                           "processed_at": dt.datetime.now().isoformat(timespec="seconds")}
+                    if old:
+                        st.update_video(old["id"], **{k: v for k, v in row.items() if k != "path"})
+                    else:
+                        st.insert("videos", row)
+                    continue
+                seen[qh] = p
+            todo.append((p, qh))
+        st.commit(sync=False)
+        log.info("%d new video(s) to analyse · %d already done · %d duplicate(s) skipped [%.0fs]",
+                 len(todo), stats["already_done"], stats["duplicates"], time.time() - t0)
+        return todo, stats
+
     def run(self, build_reports: bool = True) -> dict:
         cfg = self.cfg
+        started = dt.datetime.now().isoformat(timespec="seconds")
         videos = V.find_videos(cfg)
-        log.info("Found %d video file(s) under %s", len(videos), cfg.input_dir)
-        todo = [p for p in videos if cfg.reprocess or not self.store.video_done(p, V.file_fingerprint(p))]
-        log.info("%d to process (%d already done)", len(todo), len(videos) - len(todo))
+        log.info("Found %d video file(s) under %s%s", len(videos), cfg.input_dir,
+                 f" (folders matching {cfg.folder_keywords})" if cfg.folder_keywords else "")
+        todo, stats = self._select(videos)
         t_all = time.time()
-        stats = Counter()
-        for i, p in enumerate(todo, 1):
+        for i, (p, qh) in enumerate(todo, 1):
             if cfg.max_runtime_minutes and (time.time() - t_all) / 60 >= cfg.max_runtime_minutes:
                 log.warning("Time budget of %.0f min reached – %d video(s) left for the next run",
                             cfg.max_runtime_minutes, len(todo) - i + 1)
@@ -151,7 +208,7 @@ class Analyzer:
                 break
             log.info("[%d/%d] %s", i, len(todo), p)
             try:
-                n = self.process_video(p)
+                n = self.process_video(p, qh)
                 stats["videos_ok"] += 1
                 stats["events"] += n
             except KeyboardInterrupt:
@@ -163,8 +220,8 @@ class Analyzer:
                     self.store.db.execute("UPDATE videos SET status='error', error=? WHERE path=?", (str(e)[:2000], p))
                     if not self.store.db.execute("SELECT 1 FROM videos WHERE path=?", (p,)).fetchone():
                         self.store.insert("videos", {"path": p, "rel_path": os.path.relpath(p, cfg.input_dir),
-                                                     "status": "error", "error": str(e)[:2000],
-                                                     "fingerprint": V.file_fingerprint(p)})
+                                                     "status": "error", "error": str(e)[:2000], "qhash": qh,
+                                                     "fingerprint": V.file_fingerprint(p), "run_id": self.run_id})
                     self.store.commit()
                 except Exception:
                     pass
@@ -172,13 +229,46 @@ class Analyzer:
                 self.progress(i, len(todo), p)
             gc.collect()
         self._save_side_data()
+        stats["new_faces"] = len(self.new_faces)
+        self.store.insert("runs", {"run_id": self.run_id, "started": started,
+                                   "finished": dt.datetime.now().isoformat(timespec="seconds"),
+                                   "videos": stats["videos_ok"], "events": stats["events"],
+                                   "new_faces": len(self.new_faces), "duplicates": stats["duplicates"],
+                                   "notes": json.dumps(dict(stats))})
         self.store.commit()
         log.info("Analysis finished in %.1f min: %s", (time.time() - t_all) / 60, dict(stats))
         if build_reports:
             from .report import build_reports as br
-            br(self.store, cfg)
+            try:
+                self.outputs = br(self.store, cfg, self.new_days, self.run_id)
+            except Exception as e:
+                log.exception("report building failed: %s", e)
         self.store.commit()
+        self.print_summary(stats)
         return dict(stats)
+
+    def print_summary(self, stats):
+        log.info("=" * 70)
+        log.info("RUN SUMMARY %s: %d video(s) analysed, %d event(s), %d duplicate(s) skipped, %d failed",
+                 self.run_id, stats.get("videos_ok", 0), stats.get("events", 0), stats.get("duplicates", 0),
+                 stats.get("videos_failed", 0))
+        if self.new_days:
+            log.info("Days updated: %s", ", ".join(sorted(self.new_days)))
+        hi = self.store.query("SELECT event_id, level, score, start_dt, camera FROM events WHERE run_id=? AND "
+                              "level IN ('HIGH','REVIEW') ORDER BY score DESC LIMIT 10", (self.run_id,))
+        for e in hi:
+            log.info("  ⚠️  %s %3.0f  %s  %s  %s", e["level"], e["score"], e["start_dt"], e["camera"], e["event_id"])
+        if self.new_faces:
+            log.warning("🆕 %d NEW face(s) never seen before – review Unique_Faces.xlsx:", len(self.new_faces))
+            for f in self.new_faces[:30]:
+                log.warning("     %s  first seen %s on %s (%s @ %s)", f["identity"], f["dt"], f["camera"],
+                            f["video"], V.fmt_offset(f["t_off"] or 0))
+        else:
+            log.info("No new faces in this run.")
+        al = self.store.query("SELECT COUNT(*) n FROM face_alerts WHERE run_id=? AND kind='unauthorized'", (self.run_id,))
+        if al and al[0]["n"]:
+            log.warning("🚫 %d unauthorised-person alert(s) on authorised-only cameras", al[0]["n"])
+        log.info("=" * 70)
 
     def _save_side_data(self):
         if self.idb is not None:
@@ -188,7 +278,7 @@ class Analyzer:
                                 emb=np.stack(self.sem_embs).astype(np.float16), keys=np.array(self.sem_keys, dtype=object))
 
     # --------------------------------------------------------- single video
-    def process_video(self, path: str) -> int:
+    def process_video(self, path: str, qhash: Optional[str] = None) -> int:
         cfg = self.cfg
         t0 = time.time()
         meta = V.probe(path)
@@ -203,7 +293,8 @@ class Analyzer:
                 "duration": meta["duration"], "fps": meta["fps"], "width": meta["width"],
                 "height": meta["height"], "codec": meta["codec"], "size_mb": os.path.getsize(path) / 1e6,
                 "status": "running", "error": None, "processed_at": dt.datetime.now().isoformat(timespec="seconds"),
-                "drive_link": V.drive_link(path) if cfg.drive_links else ""}
+                "drive_link": V.drive_link(path) if cfg.drive_links else "", "qhash": qhash,
+                "run_id": self.run_id, "duplicate_of": None}
         vid = self.store.start_video(vrow)
         log.info("  %s | %dx%d %.1ffps %s | %s | start %s (%s)", camera, meta["width"], meta["height"],
                  meta["fps"], V.fmt_offset(meta["duration"]), meta["codec"], _iso(start_dt), tsrc)
@@ -261,6 +352,7 @@ class Analyzer:
         dur = max(0.5, e - s)
         ev_dt = start_dt + dt.timedelta(seconds=s) if start_dt else None
         ev["start_dt"] = ev_dt
+        ev["camera"] = camera
         eid = f"{_safe(camera or 'cam')}-{ev_dt:%Y%m%d-%H%M%S}-{vid:04d}{k:03d}" if ev_dt else \
             f"{_safe(os.path.splitext(os.path.basename(path))[0])}-{vid:04d}{k:03d}"
         edir = os.path.join(vdir, eid)
@@ -378,7 +470,14 @@ class Analyzer:
                 m = np.mean(embs, 0)
                 m /= np.linalg.norm(m) + 1e-9
                 when = _iso(start_dt + dt.timedelta(seconds=sm["first"])) if start_dt else rel
-                pid, sim, kn = self.idb.assign(m, when or "", sm["face_crop"], eid)
+                pid, sim, kn = self.idb.assign(m, when or "", sm["face_crop"], eid, camera)
+                if self.idb.last_new and not kn:
+                    alert = {"run_id": self.run_id, "kind": "new_face", "identity": pid, "dt": when,
+                             "camera": camera, "event_id": eid, "video": rel, "t_off": round(sm["first"], 2),
+                             "face_crop": sm["face_crop"], "person_crop": sm["person_crop"],
+                             "note": "face never seen before"}
+                    self.store.insert("face_alerts", alert, replace=False)
+                    self.new_faces.append(alert)
                 if sm["face_crop"]:
                     self.idb.set_sample(pid, sm["face_crop"])
                 sm.update({"identity": pid, "identity_sim": round(sim, 3), "known_name": kn})
@@ -495,7 +594,17 @@ class Analyzer:
             "score": round(score, 1), "level": level, "flags": flags,
             "semantic": semantic[:K], "vlm": vlm_res, "snapshots": snaps, "contact_sheet": sheet_path,
             "clip_path": clip, "folder": edir, "after_hours": int(R.is_after_hours(ev_dt, cfg)),
-            "frames_analyzed": nframes})
+            "frames_analyzed": nframes, "run_id": self.run_id})
+        self.new_days.add(ev_dt.strftime("%Y-%m-%d") if ev_dt else "unknown-date")
+        if any(f["flag"] == "unauthorized_person" for f in flags):
+            for sm in persons:
+                if not sm.get("known_name"):
+                    self.store.insert("face_alerts", {
+                        "run_id": self.run_id, "kind": "unauthorized", "identity": sm.get("identity") or "",
+                        "dt": _iso(start_dt + dt.timedelta(seconds=sm["first"])) if start_dt else None,
+                        "camera": camera, "event_id": eid, "video": rel, "t_off": round(sm["first"], 2),
+                        "face_crop": sm.get("face_crop", ""), "person_crop": sm.get("person_crop", ""),
+                        "note": "not a known person on an authorised-only camera"}, replace=False)
         log.info("  event %s %s→%s %s persons=%d tracks=%d faces=%d score=%.0f %s", eid, V.fmt_offset(s),
                  V.fmt_offset(e), kind, len(persons), len(summaries), faces_total, score,
                  ",".join(f["flag"] for f in flags))

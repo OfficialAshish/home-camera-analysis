@@ -29,14 +29,32 @@ def resolve_device(pref: str = "auto") -> str:
     return "cpu"
 
 
+class _DropNoise(logging.Filter):
+    NOISE = ("'half' is deprecated", "Use 'quantize' instead")
+
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(n in msg for n in self.NOISE)
+
+
+def _quiet_ultralytics():
+    lg = logging.getLogger("ultralytics")
+    if not any(isinstance(f, _DropNoise) for f in lg.filters):
+        lg.addFilter(_DropNoise())
+        for h in lg.handlers:
+            h.addFilter(_DropNoise())
+
+
 def load_yolo(candidates: List[str]):
     from ultralytics import YOLO
+    from . import modelcache
+    _quiet_ultralytics()
     last = None
     for name in candidates:
         if not name:
             continue
         try:
-            m = YOLO(name)
+            m = YOLO(modelcache.yolo_weights(name))
             log.info("Loaded %s", name)
             return m, name
         except Exception as e:  # weights missing / unsupported by installed version

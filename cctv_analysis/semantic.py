@@ -18,8 +18,10 @@ class Semantic:
         self.torch = torch
         self.device = device if device.startswith("cuda") else "cpu"
         dtype = torch.float16 if self.device.startswith("cuda") else torch.float32
-        self.model = AutoModel.from_pretrained(cfg.semantic_model, dtype=dtype).to(self.device).eval()
-        self.proc = AutoProcessor.from_pretrained(cfg.semantic_model)
+        from . import modelcache
+        cd = modelcache.hf_dir()
+        self.model = AutoModel.from_pretrained(cfg.semantic_model, dtype=dtype, cache_dir=cd).to(self.device).eval()
+        self.proc = AutoProcessor.from_pretrained(cfg.semantic_model, cache_dir=cd)
         self.dtype = dtype
         self.sus = list(cfg.suspicious_prompts)
         self.norm = list(cfg.normal_prompts)
