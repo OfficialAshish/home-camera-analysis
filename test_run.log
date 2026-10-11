@@ -1,0 +1,12 @@
+11:32:45 INFO Device: cpu
+11:32:45 INFO Found 2 video file(s) under test_data/shop
+11:32:45 INFO 2 to process (0 already done)
+11:32:45 INFO [1/2] test_data/shop/ch01/ch01_20261011100000.avi
+11:32:45 INFO   ch01 | 768x576 10.0fps 00:01:19 | msmpeg4v3 | start 2026-10-11 10:00:00 (filename)
+11:32:47 INFO   motion pass: 318 frames, 1 event(s), 0 tamper, 0 lighting change(s) [1s]
+[KDownloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26s.pt to 'yolo26s.pt': 100% ━━━━━━━━━━━━ 19.5MB 409.1MB/s 0.0s
+11:32:47 INFO Loaded yolo26s.pt
+[KDownloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n-pose.pt to 'yolo26n-pose.pt': 100% ━━━━━━━━━━━━ 7.5MB 311.7MB/s 0.0s
+11:32:47 INFO Loaded yolo26n-pose.pt
+[ WARN:0@3.304] global net_impl_backend.cpp:345 setPreferableTarget Targets are not supported by the new graph engine for now
+[ WARN:0@3.445] global net_impl_backend.cpp:345 setPreferableTarget Targets are not supported by the new graph engine for now

@@ -153,6 +153,15 @@ class Analyzer:
             except Exception as e:
                 stats["videos_failed"] += 1
                 log.error("FAILED %s: %s\n%s", p, e, traceback.format_exc())
+                try:
+                    self.store.db.execute("UPDATE videos SET status='error', error=? WHERE path=?", (str(e)[:2000], p))
+                    if not self.store.db.execute("SELECT 1 FROM videos WHERE path=?", (p,)).fetchone():
+                        self.store.insert("videos", {"path": p, "rel_path": os.path.relpath(p, cfg.input_dir),
+                                                     "status": "error", "error": str(e)[:2000],
+                                                     "fingerprint": V.file_fingerprint(p)})
+                    self.store.commit()
+                except Exception:
+                    pass
             if self.progress:
                 self.progress(i, len(todo), p)
             gc.collect()
