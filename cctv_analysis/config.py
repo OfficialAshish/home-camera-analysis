@@ -142,7 +142,7 @@ class Config:
     semantic_model: str = "google/siglip2-base-patch16-224"
     suspicious_prompts: List[str] = field(default_factory=lambda: list(DEFAULT_SUSPICIOUS_PROMPTS))
     normal_prompts: List[str] = field(default_factory=lambda: list(DEFAULT_NORMAL_PROMPTS))
-    semantic_alert_prob: float = 0.35
+    semantic_alert_score: float = 0.10           # SigLIP sigmoid; also needs lift >= 0.6
 
     use_vlm: bool = True
     vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
