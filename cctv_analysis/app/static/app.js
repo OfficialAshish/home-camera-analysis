@@ -49,6 +49,10 @@ async function waitJob(job, onTick) {
   }
 }
 function busy(btn, on) { btn.disabled = on; }
+// "latest request wins": a slow, older response must never overwrite a newer one
+const SEQ = {};
+function nextSeq(k) { SEQ[k] = (SEQ[k] || 0) + 1; return SEQ[k]; }
+function stale(k, n) { return SEQ[k] !== n; }
 
 // --------------------------------------------------------------------- tabs
 document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
@@ -270,8 +274,10 @@ async function loadEvents() {
     levels: [...document.querySelectorAll(".f-lv:checked")].map(x => x.value).join(","), q: $("f-q").value.trim(),
     person: $("f-person").value.trim(), plate: $("f-plate").value.trim(), people: $("f-people").checked ? "1" : "",
     review: $("f-review").value, sort: $("f-sort").value, limit: S.limit, offset: S.offset });
+  const n = nextSeq("events");
   try {
     const r = await api("GET", "/api/results/events?" + q);
+    if (stale("events", n)) return;
     $("ev-count").textContent = r.total ? `${r.offset + 1}–${Math.min(r.total, r.offset + r.items.length)} of ${r.total} event(s)` : "No events match.";
     $("ev-prev").disabled = r.offset === 0; $("ev-next").disabled = r.offset + r.items.length >= r.total;
     clear($("ev-list"), r.items.map(e => el("div", { class: "ev", onclick: () => openEvent(e.event_id) },
@@ -339,8 +345,10 @@ $("pl-go").addEventListener("click", loadPlates);
 $("pl-q").addEventListener("keydown", (e) => { if (e.key === "Enter") loadPlates(); });
 async function loadPlates() {
   if (!S.resOut) { toast("Open a results folder first (Results tab).", true); return; }
+  const n = nextSeq("plates");
   try {
     const r = await api("GET", "/api/results/plates?out=" + encodeURIComponent(S.resOut) + "&q=" + encodeURIComponent($("pl-q").value) + "&edits=" + $("pl-edits").value);
+    if (stale("plates", n)) return;
     clear($("pl-list"), r.plates.length ? r.plates.map(p => el("div", { class: "tile", onclick: () => { showTab("results"); openEvent(p.event_id); } },
       p.crop ? el("img", { src: fileUrl(S.resOut, p.crop) }) : null, el("div", { class: "plate-text", text: p.text }),
       el("div", { class: "small", text: `${p.time || ""} · ${p.camera || ""} · ${p.vehicle} · ${p.confidence}${p.watchlist ? " · WATCHLIST" : ""}` }))) : [el("p", { class: "hint", text: "No plates found." })]);
@@ -457,15 +465,18 @@ function openBrowser(target, allowCreate, cb) {
   loadDir((target && target.value.trim()) || "");
 }
 async function loadDir(p) {
+  const n = nextSeq("dir");
   try {
     const r = await api("GET", "/api/fs/list?path=" + encodeURIComponent(p));
+    if (stale("dir", n)) return;
     $("fb-path").value = r.path; S.fbParent = r.parent;
     $("fb-info").textContent = r.videos_here ? `${r.videos_here} video file(s) directly in this folder` : "";
     clear($("fb-list"), r.dirs.map(d => el("div", { text: "📁 " + d, ondblclick: () => loadDir(r.path.replace(/[\\/]+$/, "") + (r.path.includes("\\") ? "\\" : "/") + d),
       onclick: () => loadDir(r.path.replace(/[\\/]+$/, "") + (r.path.includes("\\") ? "\\" : "/") + d) })));
     const roots = await api("GET", "/api/fs/roots");
+    if (stale("dir", n)) return;
     clear($("fb-roots"), roots.roots.map(x => el("button", { text: x, onclick: () => loadDir(x) })));
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { if (!stale("dir", n)) toast(e.message, true); }
 }
 $("fb-close").addEventListener("click", () => $("fb").classList.add("hidden"));
 $("fb-up").addEventListener("click", () => { if (S.fbParent) loadDir(S.fbParent); });

@@ -1,7 +1,6 @@
 name: CI
 on:
-  push:
-  pull_request:
+  push:                  # every branch; PRs show the checks of their head commit
   workflow_dispatch:
 
 concurrency:

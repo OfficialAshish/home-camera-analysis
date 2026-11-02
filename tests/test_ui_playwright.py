@@ -46,6 +46,18 @@ def server(tmp_path_factory):
         os.rmdir(data / "models")
         os.symlink(MODELS, data / "models")
     app = create_app(str(data), "ui-token", port)
+    # Make the folder browser's first listing (home folder) slow, so a newer listing the user asks
+    # for returns first: an older response must not overwrite it (found on a CI runner).
+    import time as _t
+
+    from flask import request as _rq
+    real = app.view_functions["fs_list"]
+
+    def slow_home():
+        if not _rq.args.get("path"):
+            _t.sleep(2.0)
+        return real()
+    app.view_functions["fs_list"] = slow_home
     srv = create_server(app, host="127.0.0.1", port=port, threads=6)
     t = threading.Thread(target=srv.run, daemon=True)
     t.start()
@@ -79,6 +91,7 @@ def test_full_user_flow(server):
         page.fill("#fb-path", str(server["inp"].parent))
         page.press("#fb-path", "Enter")
         page.locator("#fb-list div", has_text="recordings").click()
+        page.wait_for_timeout(2500)          # the slow first listing has now arrived – it must be ignored
         expect(page.locator("#fb-path")).to_have_value(str(server["inp"]))
         page.click("#fb-ok")
         expect(page.locator("#in-dir")).to_have_value(str(server["inp"]))
