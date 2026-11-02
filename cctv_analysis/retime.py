@@ -44,7 +44,7 @@ def retime(cfg, progress=None, cancel=None, build_reports: bool = True) -> dict:
     store = Store(os.path.join(cfg.work_dir, "analysis.db"), os.path.join(cfg.output_dir, "analysis.db"))
     ocr = get_ocr(cfg.ocr_engine)
     vids = store.query("SELECT id, path, start_dt, time_source FROM videos WHERE status='done' ORDER BY id")
-    stats = {"videos": 0, "videos_changed": 0, "events_changed": 0, "missing": 0}
+    stats: dict = {"videos": 0, "videos_changed": 0, "events_changed": 0, "missing": 0}
     days = set()
     db = store.db
     for i, v in enumerate(vids, 1):

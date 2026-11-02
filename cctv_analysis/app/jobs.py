@@ -43,9 +43,10 @@ class Job:
         self.result = None
         self.error = ""
         self.created = time.time()
-        self.started = self.finished = None
+        self.started: Optional[float] = None
+        self.finished: Optional[float] = None
         self.cancel = threading.Event()
-        self.log = collections.deque(maxlen=400)
+        self.log: collections.deque = collections.deque(maxlen=400)
         self.thread: Optional[threading.Thread] = None
 
     def update(self, ev: dict):

@@ -5,17 +5,17 @@ import sqlite3
 import sys
 
 import numpy as np
-import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+import make_plate_video  # noqa: E402
+
 from cctv_analysis import plates as P  # noqa: E402
 from cctv_analysis import video_io as V  # noqa: E402
 from cctv_analysis.config import Config  # noqa: E402
 from cctv_analysis.pipeline import Analyzer  # noqa: E402
-import make_plate_video  # noqa: E402
 
 MODELS = os.environ.get("CCTV_TEST_MODEL_DIR", os.path.join(ROOT, ".test_models"))
 

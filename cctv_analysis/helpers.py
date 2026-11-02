@@ -14,9 +14,9 @@ import numpy as np
 from . import annotate as A
 from . import timeline as T
 from . import video_io as V
-from .ocr import get_ocr
 from .config import Config
 from .motion import detect_osd_mask, poly_mask
+from .ocr import get_ocr
 from .rules import zones_for
 from .storage import Store
 
@@ -128,7 +128,7 @@ def show_events(cfg: Config, where: str = "level IN ('HIGH','REVIEW')", order: s
     return rows
 
 
-_SEM_CACHE = {}
+_SEM_CACHE: dict = {}
 
 
 def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
@@ -143,8 +143,8 @@ def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
     hits = search_index(sem, os.path.join(cfg.output_dir, "semantic_index.npz"), query, k)
     st = _store(cfg)
     results = []
-    for key, score in hits:
-        eid, t = key.split("|")
+    for hit, score in hits:
+        eid, t = hit.split("|")
         e = st.query("SELECT * FROM events WHERE event_id=?", (eid,))
         if not e:
             continue
@@ -281,7 +281,7 @@ def review_dashboard(cfg: Config):
     """Interactive filter panel (date range, camera, level, person ID, text, new faces) for the notebook."""
     try:
         import ipywidgets as W
-        from IPython.display import display, clear_output
+        from IPython.display import clear_output, display
     except Exception:
         print("ipywidgets not available – use show_events(cfg, where=...) instead.")
         return

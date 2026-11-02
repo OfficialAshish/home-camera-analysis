@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import re
-from typing import List, Optional
+from typing import List
 
 import numpy as np
 
@@ -152,8 +152,8 @@ def make_vlm(cfg, device: str) -> VLMBase:
 
 
 def parse_verdict(txt: str) -> dict:
-    out = {"description": txt.strip(), "suspicious": None, "category": "", "confidence": None,
-           "reason": "", "raw": txt}
+    out: dict = {"description": txt.strip(), "suspicious": None, "category": "", "confidence": None,
+                 "reason": "", "raw": txt}
     m = re.search(r"\{.*\}", txt, re.S)
     if m:
         raw = m.group(0)

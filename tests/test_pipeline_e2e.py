@@ -2,7 +2,6 @@
 Slow-ish (~2 min); needs requirements.txt installed. Models download once into tests' cache."""
 import csv
 import datetime as dt
-import json
 import os
 import sqlite3
 import sys
@@ -15,12 +14,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+import make_cloud_clips  # noqa: E402
+
 from cctv_analysis import timeline as T  # noqa: E402
 from cctv_analysis import video_io as V  # noqa: E402
 from cctv_analysis.config import Config  # noqa: E402
 from cctv_analysis.ocr import get_ocr  # noqa: E402
 from cctv_analysis.pipeline import Analyzer  # noqa: E402
-import make_cloud_clips  # noqa: E402
 
 MODELS = os.environ.get("CCTV_TEST_MODEL_DIR", os.path.join(ROOT, ".test_models"))
 FAST = dict(use_vlm=False, use_semantic=False, use_faces=False, use_pose=False, detector_model="yolo26n.pt",
@@ -191,3 +191,25 @@ def test_retime_fixes_already_analysed_footage(tmp_path):
     assert os.path.exists(os.path.join(out, "highlights", "2026", "10-Oct", "2026-10-31_highlights.mp4"))
     assert not os.path.exists(os.path.join(out, "reports", "2026", "01-07-Nov-2026-W44.xlsx"))
     assert os.path.exists(os.path.join(out, "reports", "2026", "25-31-Oct-2026-W43.xlsx"))
+
+
+def test_broken_detector_fails_videos_instead_of_reporting_success(tmp_path, monkeypatch):
+    """A detector that cannot run must not yield 'done' videos with zero events (silent success)."""
+    from cctv_analysis import detector as D
+    inp = tmp_path / "in"
+    make_cloud_clips.make(str(inp), 5)
+    cfg = _cfg(tmp_path, inp)
+
+    def boom(self, frame):
+        raise RuntimeError("operator torchvision::nms does not exist")
+    monkeypatch.setattr(D.Detector, "__call__", boom)
+    stats = Analyzer(cfg).run(build_reports=False)
+    assert stats.get("videos_ok", 0) == 0 and stats["videos_failed"] == 3 and stats["aborted"] == 1
+    assert stats["videos_deferred"] == 2
+    db = sqlite3.connect(os.path.join(cfg.output_dir, "analysis.db"))
+    assert db.execute("SELECT COUNT(*) FROM videos WHERE status='done'").fetchone()[0] == 0
+    assert db.execute("SELECT COUNT(*) FROM videos WHERE status='error' AND error LIKE '%nms%'").fetchone()[0] == 3
+    db.close()
+    monkeypatch.undo()
+    stats = Analyzer(cfg).run(build_reports=False)                     # fixed install: everything is retried
+    assert stats["videos_ok"] == 5

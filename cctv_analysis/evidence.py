@@ -30,13 +30,16 @@ import sqlite3
 import subprocess
 import tempfile
 import zipfile
-from typing import Iterable, List, Optional
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Union
 
 import cv2
 import numpy as np
 
 from . import __version__
 from . import video_io as V
+
+if TYPE_CHECKING:
+    from .plates import ClassicPlateDetector, YoloPlateDetector
 
 log = logging.getLogger("cctv")
 
@@ -67,7 +70,7 @@ class Redactor:
     def __init__(self, cfg, plates: bool = False):
         from .faces import FaceEngine
         self.fe = FaceEngine(cfg)
-        self.pd = None
+        self.pd: Optional[Union["YoloPlateDetector", "ClassicPlateDetector"]] = None
         if plates:
             try:
                 from .plates import YoloPlateDetector
@@ -105,8 +108,7 @@ class Redactor:
         w = min(width, meta["width"]) // 2 * 2
         h = int(round(meta["height"] * w / meta["width"])) // 2 * 2
         proc = subprocess.Popen([V.FFMPEG, "-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                                 "-s", f"{w}x{h}", "-r", str(fps), "-i", "pipe:0", "-c:v", "libx264", "-preset",
-                                 "veryfast", "-crf", "24", "-pix_fmt", "yuv420p", out],
+                                 "-s", f"{w}x{h}", "-r", str(fps), "-i", "pipe:0", *V.h264_args(24), out],
                                 stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
         n = 0
         try:
@@ -170,10 +172,10 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
     missing = [i for i in ids if i not in found]
     if missing:
         raise KeyError(f"unknown event id(s): {', '.join(missing[:5])}")
-    plates = {}
+    plates: Dict[str, List[dict]] = {}
     for r in db.execute(f"SELECT * FROM plates WHERE event_id IN ({q})", ids):
         plates.setdefault(r["event_id"], []).append(dict(r))
-    tracks = {}
+    tracks: Dict[str, List[dict]] = {}
     for r in db.execute(f"SELECT event_id, track, cls, identity, known_name, face_crop, person_crop FROM tracks "
                         f"WHERE event_id IN ({q})", ids):
         tracks.setdefault(r["event_id"], []).append(dict(r))
@@ -208,7 +210,7 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
                                                 "one keyframe before the event start")
             images = []
 
-            def put(path, name):
+            def put(path, name, d=d):
                 if not path or not os.path.exists(path):
                     return None
                 dst = os.path.join(d, name)

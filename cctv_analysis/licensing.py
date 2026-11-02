@@ -128,6 +128,13 @@ def verify(key_text: str, public_key_pem: Optional[bytes] = None, today: Optiona
     return LicenseStatus(True, "LICENSED", f"licensed to {base['customer']} until {exp}", days_left=left, **base)
 
 
+def apply_limits(cfg, status: LicenseStatus):
+    """Trial mode (no valid licence): at most TRIAL_MAX_VIDEOS videos per job."""
+    if not status.valid:
+        cfg.max_videos = min(cfg.max_videos or TRIAL_MAX_VIDEOS, TRIAL_MAX_VIDEOS)
+    return cfg
+
+
 class LicenseStore:
     """Installed licence + last-seen date, in the app's data folder."""
 

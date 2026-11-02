@@ -106,7 +106,7 @@ def available_engines() -> dict:
     return out
 
 
-_CACHE = {}
+_CACHE: dict = {}
 
 
 def get_ocr(engine: str = "auto", vlm_getter: Optional[Callable] = None) -> OCREngine:

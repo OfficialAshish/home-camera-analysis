@@ -1,7 +1,11 @@
 """Executes cctv-analysis.ipynb outside Colab against local test data (CPU),
 with a tiny VLM so the whole code path, including AI descriptions, is exercised."""
-import os, sys, nbformat
+import os
+import sys
+
+import nbformat
 from nbclient import NotebookClient
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 nb = nbformat.read(os.path.join(ROOT, "cctv-analysis.ipynb"), as_version=4)
 inp, out = sys.argv[1], sys.argv[2]

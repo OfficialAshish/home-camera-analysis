@@ -141,7 +141,7 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
     weapons = sorted({t["cls"] for t in tracks if t["cls"] in cfg.weapon_classes and t["max_conf"] >= 0.4})
     if weapons:
         add("weapon_like_object", "detected: " + ", ".join(weapons))
-    zone_hits = {}
+    zone_hits: Dict[str, float] = {}
     for t in persons:
         for z, secs in t.get("zones", {}).items():
             zone_hits[z] = zone_hits.get(z, 0) + secs

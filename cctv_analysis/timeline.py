@@ -20,13 +20,9 @@ import logging
 import os
 import re
 from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from .video_io import read_frame_at
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None
 
 log = logging.getLogger("cctv")
 
@@ -43,8 +39,6 @@ def is_exact(time_source: Optional[str]) -> bool:
 
 
 def tz(name: str):
-    if ZoneInfo is None:
-        return dt.timezone.utc
     try:
         return ZoneInfo(name)
     except Exception:
@@ -301,7 +295,7 @@ def osd_start_time(path: str, meta: dict, ocr, order: str = "auto", hint: Option
         start = early[0][1]
         later = [r for r in reads if r[0] > 2.0]
         return _round(start), "consensus" if all(close(start, s) for _, s in later) else "discontinuous"
-    groups = []
+    groups: List[list] = []
     for t, s in reads:
         for g in groups:
             if close(s, g[0][1]):

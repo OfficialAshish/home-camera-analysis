@@ -74,8 +74,7 @@ def _encode_clean(e: dict, out: str, cfg, dur: float) -> bool:
           f"setsar=1,fps={int(cfg.reel_fps)}")
     cmd = [V.FFMPEG, "-nostdin", "-y", "-v", "error", "-ss", f"{max(0.0, e['start_off']):.3f}",
            *V._input_args(e["video_path"]), "-i", e["video_path"], "-t", f"{max(0.5, dur):.3f}", "-map", "0:v:0",
-           "-an", "-sn", "-vf", vf, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-           "-video_track_timescale", "15360", out]
+           "-an", "-sn", "-vf", vf, *V.h264_args(23), "-video_track_timescale", "15360", out]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:
         log.warning("reel: ffmpeg failed for %s: %s", e["event_id"], r.stderr[-300:])
@@ -93,9 +92,8 @@ def _encode_overlay(e: dict, out: str, cfg, dur: float) -> bool:
     info = f"{e['camera']} | {e['level']} {e['score']:g} | {e['event_id']} | {e['rel_path']}"
     sc = W / 1100
     proc = subprocess.Popen([V.FFMPEG, "-nostdin", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgr24",
-                             "-s", f"{W}x{H}", "-r", str(fps), "-i", "pipe:0", "-c:v", "libx264", "-preset",
-                             "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-video_track_timescale", "15360",
-                             out], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+                             "-s", f"{W}x{H}", "-r", str(fps), "-i", "pipe:0", *V.h264_args(23),
+                             "-video_track_timescale", "15360", out], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
 
     def bar(img, text, y, scale, color):
         (tw, th), bl = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 2)

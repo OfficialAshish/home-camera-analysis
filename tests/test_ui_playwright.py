@@ -15,10 +15,10 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
 playwright = pytest.importorskip("playwright.sync_api", reason="pip install playwright && playwright install chromium")
-from playwright.sync_api import expect, sync_playwright  # noqa: E402
-
 import make_cloud_clips  # noqa: E402
 import make_plate_video  # noqa: E402
+from playwright.sync_api import expect, sync_playwright  # noqa: E402
+
 from cctv_analysis.app.server import create_app  # noqa: E402
 
 MODELS = os.environ.get("CCTV_TEST_MODEL_DIR", os.path.join(ROOT, ".test_models"))

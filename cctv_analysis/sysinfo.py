@@ -120,7 +120,7 @@ def system_check(output_dir: str = "", model_dir: str = "") -> dict:
     chk("Memory", ram >= 8, f"{ram:.1f} GB RAM ({vm.available / 1e9:.1f} GB free)", "warning")
     chk("Local AI descriptions (VLM on this PC)", gpu["available"] or vm.available / 1e9 >= 10,
         "GPU available" if gpu["available"] else
-        f"CPU only: a 2B model needs ~9 GB free RAM and ~45 s per event – consider an Ollama/LM Studio server",
+        "CPU only: a 2B model needs ~9 GB free RAM and ~45 s per event – consider an Ollama/LM Studio server",
         "warning")
     chk("Free disk space", du.free / 1e9 >= 5, f"{du.free / 1e9:.1f} GB free at {_nearest_existing(output_dir)}",
         "warning")
@@ -170,7 +170,6 @@ def download_model(model_id: str, model_dir: str = "") -> str:
         from .faces import fetch
         return fetch(model_id)
     if model_id in ("plate-detector", "plate-ocr"):
-        from .config import Config
         from .plates import FastPlateOCR, YoloPlateDetector
         (YoloPlateDetector if model_id == "plate-detector" else FastPlateOCR)()
         return model_id
@@ -231,13 +230,14 @@ def benchmark(cfg, sample_video: str, seconds: float = 20.0) -> dict:
         log.warning("benchmark: OCR unavailable (%s)", e)
     if V.FFMPEG:
         import tempfile
+
         from .reels import encode_segment
         with tempfile.TemporaryDirectory() as td:
-            e = {"event_id": "bench", "video_path": sample_video, "start_off": 0.0, "end_off": min(seg, 10.0),
-                 "camera": "", "level": "", "score": 0, "rel_path": "", "start_dt": None}
+            seg_ev = {"event_id": "bench", "video_path": sample_video, "start_off": 0.0, "end_off": min(seg, 10.0),
+                      "camera": "", "level": "", "score": 0, "rel_path": "", "start_dt": None}
             t0 = time.time()
-            if encode_segment(e, os.path.join(td, "b.mp4"), cfg):
-                rates["reel_x_realtime"] = round(e["end_off"] / max(1e-3, time.time() - t0), 1)
+            if encode_segment(seg_ev, os.path.join(td, "b.mp4"), cfg):
+                rates["reel_x_realtime"] = round(seg_ev["end_off"] / max(1e-3, time.time() - t0), 1)
                 measured.append("reel_x_realtime")
     return {"rates": rates, "measured": measured, "sample": os.path.basename(sample_video)}
 

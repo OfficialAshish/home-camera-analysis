@@ -15,7 +15,7 @@ import threading
 import time
 import traceback
 from collections import Counter, defaultdict
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -25,8 +25,8 @@ from . import rules as R
 from . import timeline as T
 from . import video_io as V
 from .config import Config
-from .motion import scan_motion
 from .faces import sharpness
+from .motion import scan_motion
 from .storage import Store
 
 log = logging.getLogger("cctv")
@@ -50,12 +50,12 @@ def setup_logging(out_dir: str, verbose: bool = True):
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
     fh = logging.FileHandler(os.path.join(out_dir, "run_log.txt"), encoding="utf-8")
     fh.setFormatter(fmt)
-    fh._cctv_run = True
+    setattr(fh, "_cctv_run", True)
     log.addHandler(fh)
     if verbose:
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
-        sh._cctv_run = True
+        setattr(sh, "_cctv_run", True)
         log.addHandler(sh)
     log.propagate = False
 
@@ -124,7 +124,8 @@ class Analyzer:
         from . import modelcache
         modelcache.init(cfg.model_cache_dir)
         self.run_id = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.new_days, self.new_faces = set(), []
+        self.new_days: set = set()
+        self.new_faces: List[dict] = []
         self.store = Store(os.path.join(cfg.work_dir, "analysis.db"), os.path.join(cfg.output_dir, "analysis.db"))
         from .detector import resolve_device
         V.HW_DECODE = cfg.hw_decode
@@ -134,6 +135,8 @@ class Analyzer:
         self._vlm_failed = self._plates_failed = False
         self.idb = self.watch = None
         self._vlm_count = 0
+        self._vlm_errors = 0
+        self.events_failed = 0
         self.sem_keys, self.sem_embs = [], []
         idx = os.path.join(cfg.output_dir, "semantic_index.npz")
         if os.path.exists(idx):
@@ -203,6 +206,17 @@ class Analyzer:
                 self._vlm_failed = True
         return self._vlm
 
+    def _vlm_failure(self, ex):
+        """Three failures in a row (server down, model missing) disable the VLM for this run instead
+        of waiting for a timeout on every event."""
+        self._vlm_errors += 1
+        log.warning("  VLM failed (%d): %s", self._vlm_errors, ex)
+        if self._vlm_errors >= 3 and not self._vlm_failed:
+            self._vlm_failed = True
+            self._vlm = None
+            log.error("AI descriptions disabled for the rest of this run after 3 consecutive failures – check "
+                      "the model / server (%s %s)", self.cfg.vlm_provider, self.cfg.vlm_base_url or self.cfg.vlm_model)
+
     def _vlm_if_enabled(self):
         return self.vlm if self.cfg.use_vlm else None
 
@@ -219,7 +233,8 @@ class Analyzer:
             try:
                 from .plates import PlateReader
                 self._plates = PlateReader(self.cfg, lambda: self.ocr,
-                                           self._vlm_if_enabled if self.cfg.plate_vlm_read else None)
+                                           self._vlm_if_enabled if self.cfg.plate_vlm_read else None,
+                                           self._vlm_failure)
             except Exception as e:
                 log.warning("Number-plate reading disabled: %s", e)
                 self._plates_failed = True
@@ -308,6 +323,7 @@ class Analyzer:
             plan = self.plan(todo)
         except Cancelled:
             plan, stats["cancelled"] = [], 1
+        streak, last_error = 0, None
         for i, item in enumerate(plan, 1):
             p = item["path"]
             if self.cancel.is_set():
@@ -338,9 +354,22 @@ class Analyzer:
                 stats["videos_failed"] += 1
                 log.error("FAILED %s: %s\n%s", p, e, traceback.format_exc())
                 self._mark(p, item["qhash"], "error", str(e)[:2000])
+                same = str(e)[:200]
+                streak = streak + 1 if same == last_error else 1
+                last_error = same
+                if streak >= 3:
+                    stats["aborted"] = 1
+                    stats["videos_deferred"] = len(plan) - i
+                    log.error("Stopping: the same error on %d videos in a row – the installation or models are "
+                              "probably broken: %s", streak, same)
+                    break
+            else:
+                streak, last_error = 0, None
             gc.collect()
         self._save_side_data()
         stats["new_faces"] = len(self.new_faces)
+        if self.events_failed:
+            stats["events_failed"] = self.events_failed
         self.store.insert("runs", {"run_id": self.run_id, "started": started,
                                    "finished": dt.datetime.now().isoformat(timespec="seconds"),
                                    "videos": stats["videos_ok"], "events": stats["events"],
@@ -458,7 +487,8 @@ class Analyzer:
         mr.events.sort(key=lambda e: e["start"])
         for ev in mr.events:
             ev["lighting_changes"] = sum(1 for t in mr.lighting_changes if ev["start"] <= t <= ev["end"])
-        n_saved = 0
+        n_saved = n_failed = 0
+        first_error = None
         for k, ev in enumerate(mr.events, 1):
             self._check_cancel()
             self._emit(stage="event", path=path, event_index=k, events=len(mr.events))
@@ -468,9 +498,15 @@ class Analyzer:
             except Cancelled:
                 raise
             except Exception as e:
+                n_failed += 1
+                first_error = first_error or e
                 log.error("  event %d failed: %s\n%s", k, e, traceback.format_exc())
             if k % 10 == 0:
                 self.store.commit(sync=False)
+        self.events_failed += n_failed
+        if n_failed and not n_saved:
+            # nothing could be analysed (e.g. the detector cannot run): this video is NOT done
+            raise RuntimeError(f"all {n_failed} event(s) failed: {first_error}")
         motion_s = float(sum(e["end"] - e["start"] for e in mr.events))
         self.store.update_video(vid, status="done", n_events=n_saved, motion_seconds=motion_s,
                                 proc_seconds=time.time() - t0, heatmap_path=heat_path,
@@ -514,14 +550,14 @@ class Analyzer:
         need_emb = fe is not None and (self.idb is not None or self.watch is not None)
         plate_reader = self.plates
         K = max(1, cfg.snapshots_per_event)
-        slots = [None] * K
-        tracks = {}
+        slots: List[Optional[tuple]] = [None] * K
+        tracks: Dict[int, dict] = {}
         frame_people = []
         det_rows = []
-        last_logged = {}
+        last_logged: Dict[int, float] = {}
         cls_counter = defaultdict(set)
         faces_total = 0
-        plate_cands = defaultdict(list)        # track -> heap of (score, t, normalised box)
+        plate_cands: Dict[int, list] = defaultdict(list)     # track -> heap of (score, t, normalised box)
         H = W = None
         nframes = 0
         from .detector import posture
@@ -615,7 +651,7 @@ class Analyzer:
         fps = cfg.detect_fps
         summaries = []
         id_map = {}
-        crossings = defaultdict(lambda: {"in": 0, "out": 0})
+        crossings: Dict[str, Dict[str, int]] = defaultdict(lambda: {"in": 0, "out": 0})
         for tid, tr in tracks.items():
             if len(tr["obs"]) < 2 and max(o[1] for o in tr["obs"]) < 0.6:
                 continue                                  # one-off noise
@@ -678,9 +714,9 @@ class Analyzer:
         # ---------------- number plates (full-resolution re-read of the best vehicle frames)
         plates = []
         if plate_reader is not None:
-            kept = {sm["track"] for sm in summaries}
+            kept_tracks = {sm["track"] for sm in summaries}
             for tid, hp in plate_cands.items():
-                if tid not in kept:
+                if tid not in kept_tracks:
                     continue
                 self._check_cancel()
                 samples = []
@@ -729,14 +765,14 @@ class Analyzer:
             return False
 
         # ---------------- keyframes, semantic tags
-        slots = [x for x in slots if x is not None]
-        luma = frame_brightness([x[2] for x in slots])
+        kept = [x for x in slots if x is not None]
+        luma = frame_brightness([x[2] for x in kept])
         semantic = []
-        if self.sem is not None and slots:
+        if self.sem is not None and kept:
             try:
-                embs = self.sem.encode_images([x[2] for x in slots])
+                embs = self.sem.encode_images([x[2] for x in kept])
                 semantic = self.sem.classify(embs)
-                for x, emb in zip(slots, embs):
+                for x, emb in zip(kept, embs):
                     self.sem_keys.append(f"{eid}|{x[1]:.2f}")
                     self.sem_embs.append(emb.astype(np.float16))
             except Exception as ex:
@@ -746,7 +782,7 @@ class Analyzer:
         # ---------------- snapshots
         snaps = []
         sheet_imgs, sheet_caps, raw_imgs = [], [], []
-        for j, (_, t, fr, dets, ffs) in enumerate(slots, 1):
+        for j, (_, t, fr, dets, ffs) in enumerate(kept, 1):
             when = base + dt.timedelta(seconds=t) if base else None
             hdr = f"{camera} | {_iso(when) or ''} | {eid} | video {V.fmt_offset(t)}"
             ann = A.draw_dets(fr, dets, ffs, id_map, hdr, zones)
@@ -776,8 +812,9 @@ class Analyzer:
                     ctx += "; plates: " + ", ".join(p["text"] for p in plates)
                 vlm_res = self.vlm.describe_event(A.contact_sheet(raw_imgs, sheet_caps, tile_w=448), ctx)
                 self._vlm_count += 1
+                self._vlm_errors = 0
             except Exception as ex:
-                log.warning("  VLM failed: %s", ex)
+                self._vlm_failure(ex)
 
         score, flags = R.score_event(ev, summaries, cfg, vlm_res, semantic, tamper)
         level = "HIGH" if score >= 70 else "REVIEW" if score >= cfg.suspicion_alert_threshold else \

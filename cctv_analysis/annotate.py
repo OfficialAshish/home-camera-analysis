@@ -1,7 +1,7 @@
 """Drawing helpers: boxes, labels, header bars, zones, contact sheets, heatmaps."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import cv2
 import numpy as np
@@ -37,7 +37,7 @@ def draw_zones(img, zones: dict):
     cv2.addWeighted(over, 0.15, img, 0.85, 0, img)
 
 
-def draw_dets(frame, dets: List[dict], faces: List[dict] = (), ids: Optional[dict] = None,
+def draw_dets(frame, dets: List[dict], faces: Sequence[dict] = (), ids: Optional[dict] = None,
               header: str = "", zones: Optional[dict] = None) -> np.ndarray:
     img = frame.copy()
     s = max(0.45, img.shape[1] / 1600)

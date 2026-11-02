@@ -2,7 +2,6 @@
 end-to-end against a real analysed output folder (built once per module with the real pipeline)."""
 import json
 import os
-import sqlite3
 import sys
 import time
 import zipfile
@@ -13,9 +12,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
-from cctv_analysis.app.server import create_app  # noqa: E402
 import make_cloud_clips  # noqa: E402
 import make_plate_video  # noqa: E402
+
+from cctv_analysis.app.server import create_app  # noqa: E402
 
 TOKEN = "t0k3n-for-tests"
 PORT = 8765
@@ -197,7 +197,6 @@ def test_review_persists_across_reanalysis_sync(analysed):
     assert c.put(f"/api/results/events/{eid}/review", query_string={"out": out}, json={"status": "Nonsense"},
                  headers=H()).status_code == 400
     # the analyzer re-syncs analysis.db after every video; reviews live elsewhere and survive
-    from cctv_analysis.config import Config
     from cctv_analysis.storage import Store
     st = Store(str(analysed["tmp"] / "w.db"), os.path.join(out, "analysis.db"))
     st.commit()

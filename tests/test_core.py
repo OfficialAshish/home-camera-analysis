@@ -4,8 +4,6 @@ import os
 import subprocess
 import sys
 
-import numpy as np
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
@@ -128,3 +126,24 @@ def test_quick_hash_detects_copies(tmp_path):
     c = tmp_path / "c.mp4"
     c.write_bytes(a.read_bytes()[:-1] + b"x")
     assert V.quick_hash(str(a)) == V.quick_hash(str(b)) != V.quick_hash(str(c))
+
+
+def test_every_encoder_fallback_produces_a_playable_file(tmp_path, monkeypatch):
+    """libx264 is missing from LGPL ffmpeg builds; each fallback must still produce a valid video."""
+    from cctv_analysis import reels
+    src = str(tmp_path / "src.mp4")
+    subprocess.run([sys.executable, os.path.join(ROOT, "tests", "make_synthetic.py"), src], check=True)
+    r = subprocess.run([V.FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True)
+    names = [n for n in ("libx264", "libopenh264", "mpeg4") if f" {n} " in r.stdout]
+    assert "mpeg4" in names
+    cfg = Config(reel_width=640, reel_fps=10)
+    for n in names:
+        monkeypatch.setattr(V, "_ENCODER", {"name": n, "args": {"libx264": ["-c:v", "libx264", "-preset", "veryfast"],
+                                                                "libopenh264": ["-c:v", "libopenh264"],
+                                                                "mpeg4": ["-c:v", "mpeg4"]}[n]})
+        out = str(tmp_path / f"{n}.mp4")
+        e = {"event_id": n, "video_path": src, "start_off": 1.0, "end_off": 4.0}
+        assert reels.encode_segment(e, out, cfg), n
+        m = V.probe(out)
+        assert m["width"] == 640 and 2.5 <= m["duration"] <= 3.5, (n, m)
+        assert m["codec"] == {"libx264": "h264", "libopenh264": "h264", "mpeg4": "mpeg4"}[n]

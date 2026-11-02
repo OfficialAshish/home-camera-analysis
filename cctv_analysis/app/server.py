@@ -15,14 +15,12 @@ from __future__ import annotations
 
 import collections
 import datetime as dt
-import functools
 import hmac
 import json
 import logging
 import os
 import re
 import secrets
-import shutil
 import string
 import subprocess
 import sys
@@ -30,7 +28,7 @@ import threading
 import time
 from typing import Optional
 
-from flask import Flask, Response, abort, jsonify, make_response, redirect, request, send_file
+from flask import Flask, Response, jsonify, make_response, redirect, request, send_file
 
 from .. import __version__
 from .. import licensing as LIC
@@ -486,8 +484,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
                 return jsonify(job=jobs.get(existing).public()), 200
         cfg = build_config(d)
         lic = lic_status()
-        if not lic.valid:
-            cfg.max_videos = min(cfg.max_videos or LIC.TRIAL_MAX_VIDEOS, LIC.TRIAL_MAX_VIDEOS)
+        LIC.apply_limits(cfg, lic)
         key = settings.secret("vlm_api_key")
         if cfg.use_vlm and cfg.vlm_provider == "openai" and key:
             os.environ[cfg.vlm_api_key_env] = key
@@ -505,6 +502,8 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
             an = Analyzer(cfg, job.update, job.cancel)
             stats = an.run()
             audit.append("analysis_finished", job=job.id, stats=stats)
+            if stats.get("videos_failed") and not stats.get("videos_ok"):
+                raise RuntimeError(f"no video could be analysed ({stats['videos_failed']} failed) – see the log")
             return {"stats": stats, "output_dir": cfg.output_dir, "trial": not lic.valid}
         job, created = jobs.start("analysis", run, request_id=rid, exclusive=True)
         if not created and job.request_id != rid:

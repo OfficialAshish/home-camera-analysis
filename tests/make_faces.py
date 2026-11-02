@@ -1,5 +1,10 @@
 """Synthetic clips with real faces (OpenCV sample photos) moving across a scene."""
-import sys, cv2, numpy as np
+import sys
+
+import cv2
+import numpy as np
+
+
 def make(out, actors, secs=50, W=960, H=540, fps=10):
     vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), fps, (W, H))
     rng = np.random.default_rng(1)

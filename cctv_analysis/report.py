@@ -1014,7 +1014,7 @@ def _remove_stale_weeks(cfg, current_labels) -> None:
 def build_weekly(store, cfg, new_days=None) -> list:
     days = sorted({r["d"] for r in store.query("SELECT DISTINCT substr(start_dt,1,10) d FROM events "
                                                "WHERE start_dt IS NOT NULL")})
-    weeks = {}
+    weeks: dict = {}
     for d in days:
         try:
             s, e = week_bounds(d, cfg.week_start)
@@ -1046,7 +1046,7 @@ def build_weekly(store, cfg, new_days=None) -> list:
 
 def build_reports(store, cfg, new_days=None, run_id="") -> dict:
     """Build every output. `new_days` = days touched by this run (None = rebuild what is missing)."""
-    out = {}
+    out: dict = {}
     os.makedirs(cfg.work_dir, exist_ok=True)
     if cfg.make_highlight_reel:
         try:

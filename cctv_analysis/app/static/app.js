@@ -203,7 +203,12 @@ async function pollJob() {
     $("job-log").scrollTop = 1e9;
     $("btn-cancel").disabled = !["running", "queued"].includes(j.status);
     if (["running", "queued"].includes(j.status)) S.poll = setTimeout(pollJob, 1500);
-    else if (j.status === "done") toast("Analysis finished.");
+    else if (j.status === "done") {
+      const st = (j.result && j.result.stats) || {};
+      if (st.videos_failed || st.events_failed || st.aborted)
+        toast(`Finished with problems: ${st.videos_failed || 0} video(s) and ${st.events_failed || 0} event(s) failed${st.aborted ? " – stopped early" : ""}. See the log.`, true);
+      else toast("Analysis finished.");
+    }
     else if (j.status === "failed") toast("Analysis failed: " + j.error, true);
   } catch (e) { S.poll = setTimeout(pollJob, 4000); }
 }

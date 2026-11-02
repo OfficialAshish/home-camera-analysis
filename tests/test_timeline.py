@@ -1,7 +1,6 @@
 """Recording-time resolution (the cause of the out-of-order highlight reels).
 Needs an OCR engine (rapidocr-onnxruntime from requirements.txt); no detector models."""
 import datetime as dt
-import json
 import os
 import sys
 
@@ -9,11 +8,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 
+import make_cloud_clips  # noqa: E402
+
 from cctv_analysis import timeline as T  # noqa: E402
 from cctv_analysis import video_io as V  # noqa: E402
 from cctv_analysis.config import Config  # noqa: E402
 from cctv_analysis.ocr import get_ocr  # noqa: E402
-import make_cloud_clips  # noqa: E402
 
 OCR = get_ocr("auto")
 

@@ -17,7 +17,7 @@ import numpy as np
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
 HW_DECODE = "auto"          # auto | cuda | none   (set from Config.hw_decode)
-_HW_STATE = {}              # path-independent cache: {"cuda": True/False}
+_HW_STATE: dict = {}              # path-independent cache: {"cuda": True/False}
 
 
 def _cuda_present() -> bool:
@@ -372,6 +372,36 @@ def camera_name(path: str, cfg) -> str:
             return serial
     return "cam"
 
+# ------------------------------------------------------------- encoding
+
+_ENCODER: dict = {}
+
+
+def h264_args(crf: int = 23) -> List[str]:
+    """Video encoder arguments for the available ffmpeg build: libx264 (GPL builds), else
+    libopenh264 (LGPL builds, Cisco's BSD codec), else MPEG-4 Part 2 (plays in VLC, not browsers)."""
+    if "args" not in _ENCODER:
+        enc = ""
+        try:
+            r = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=30)
+            enc = r.stdout
+        except Exception:
+            pass
+        if " libx264 " in enc:
+            _ENCODER["name"], _ENCODER["args"] = "libx264", ["-c:v", "libx264", "-preset", "veryfast"]
+        elif " libopenh264 " in enc:
+            _ENCODER["name"], _ENCODER["args"] = "libopenh264", ["-c:v", "libopenh264", "-allow_skip_frames", "1"]
+        else:
+            _ENCODER["name"], _ENCODER["args"] = "mpeg4", ["-c:v", "mpeg4"]
+    args = list(_ENCODER["args"])
+    if _ENCODER["name"] == "libx264":
+        args += ["-crf", str(crf)]
+    elif _ENCODER["name"] == "libopenh264":
+        args += ["-b:v", "3M"]
+    else:
+        args += ["-q:v", "4"]
+    return args + ["-pix_fmt", "yuv420p"]
+
 # ---------------------------------------------------------------- clip export
 
 def export_clip(path: str, start: float, duration: float, out_path: str,
@@ -386,8 +416,7 @@ def export_clip(path: str, start: float, duration: float, out_path: str,
                "box=1:boxcolor=black@0.5")
     base = [FFMPEG, "-nostdin", "-y", "-v", "error", "-ss", f"{max(0, start):.3f}",
             *_input_args(path), "-i", path, "-t", f"{duration:.3f}", "-map", "0:v:0", "-an"]
-    tail = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart", out_path]
+    tail = [*h264_args(27), "-movflags", "+faststart", out_path]
     for filt in (vf, f"scale='min({width},iw)':-2"):     # retry without drawtext
         try:
             r = subprocess.run(base + ["-vf", filt] + tail, capture_output=True, timeout=900)

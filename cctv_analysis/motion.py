@@ -104,7 +104,7 @@ def scan_motion(path: str, meta: dict, cfg, camera: str = "") -> MotionResult:
     kernel_d = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
 
     ign = None
-    times, ratios, bright, sharp, glob = [], [], [], [], []
+    times, ratios, bright, glob = [], [], [], []
     heat = None
     prev = None
     for i, (t, g) in enumerate(iter_frames(path, fps, width, gray=True, src_size=(W, H))):
@@ -187,7 +187,7 @@ def scan_motion(path: str, meta: dict, cfg, camera: str = "") -> MotionResult:
                                "motion_active_s": float(np.count_nonzero(active[sel]) / fps)})
             cur = nxt
     # merge padded overlaps
-    merged = []
+    merged: List[dict] = []
     for ev in res.events:
         if merged and ev["start"] <= merged[-1]["end"] and \
                 ev["end"] - merged[-1]["start"] <= cfg.event_max_duration:

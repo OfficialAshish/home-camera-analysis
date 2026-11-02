@@ -19,10 +19,9 @@ this module re-reads those frames at full resolution and:
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections import defaultdict
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -181,7 +180,7 @@ def vote(reads: List[Tuple[str, float]], region: str = "IN") -> Tuple[str, float
     L, group = max(by_len.items(), key=lambda kv: (sum(c for _, c in kv[1]), len(kv[1])))
     chars, agree = [], []
     for i in range(L):
-        w = defaultdict(float)
+        w: dict = defaultdict(float)
         for t, c in group:
             w[t[i]] += max(c, 0.05)
         ch, s = max(w.items(), key=lambda kv: kv[1])
@@ -323,8 +322,10 @@ class YoloPlateDetector:
 
     def __init__(self):
         import pathlib
+
         from open_image_models.detection.core.hub import download_model
         from open_image_models.detection.factory import DETECTION_MODELS, create_detector
+
         from . import modelcache
         p = download_model(PLATE_DET_MODEL, save_directory=pathlib.Path(modelcache.sub("plates")) / PLATE_DET_MODEL)
         spec = DETECTION_MODELS[PLATE_DET_MODEL]
@@ -367,8 +368,10 @@ class FastPlateOCR:
 
     def __init__(self):
         import pathlib
+
         from fast_plate_ocr import LicensePlateRecognizer
         from fast_plate_ocr.inference.hub import download_model
+
         from . import modelcache
         m, c = download_model(PLATE_OCR_MODEL, save_directory=pathlib.Path(modelcache.sub("plates")) / PLATE_OCR_MODEL)
         self.rec = LicensePlateRecognizer(onnx_model_path=str(m), plate_config_path=str(c), device="cpu")
@@ -404,10 +407,12 @@ class GenericPlateOCR:
 # --------------------------------------------------------------- reader
 
 class PlateReader:
-    def __init__(self, cfg, ocr_getter: Callable, vlm_getter: Optional[Callable] = None):
+    def __init__(self, cfg, ocr_getter: Callable, vlm_getter: Optional[Callable] = None,
+                 on_vlm_error: Optional[Callable] = None):
         self.cfg = cfg
         self.vlm_getter = vlm_getter
-        self.detector = None
+        self.on_vlm_error = on_vlm_error
+        self.detector: Optional[Union[YoloPlateDetector, ClassicPlateDetector]] = None
         if cfg.plate_detector in ("auto", "yolo-plate"):
             try:
                 self.detector = YoloPlateDetector()
@@ -417,7 +422,8 @@ class PlateReader:
                 log.warning("plate detector model unavailable (%s) – using the OpenCV plate finder", e)
         if self.detector is None:
             self.detector = ClassicPlateDetector()
-        self.reader = None
+        self.find = self.detector.find
+        self.reader: Optional[Union[FastPlateOCR, GenericPlateOCR]] = None
         if cfg.plate_ocr in ("auto", "fast-plate-ocr"):
             try:
                 self.reader = FastPlateOCR()
@@ -428,6 +434,7 @@ class PlateReader:
         generic = GenericPlateOCR(ocr_getter())
         if self.reader is None:
             self.reader = generic
+        self.read = self.reader.read
         self.second = generic if (generic.ocr and self.reader is not generic) else None
         self.enhancer = Enhancer(cfg.plate_region) if cfg.plate_enhance else None
         log.info("Plate reading: detector=%s, ocr=%s, enhance=%s, vlm=%s", self.detector.name, self.reader.name,
@@ -443,7 +450,7 @@ class PlateReader:
         roi = frame[y1:y2, x1:x2]
         if roi.size == 0:
             return None
-        found = self.detector.find(roi)
+        found = self.find(roi)
         if not found:
             return None
         (bx1, by1, bx2, by2), conf = found[0]
@@ -480,7 +487,7 @@ class PlateReader:
                 continue
             crop, box, dconf, (context, inner) = loc
             crops.append((t, crop, box, angle))
-            txt, c = self.reader.read(crop)
+            txt, c = self.read(crop)
             if txt:
                 reads.append((txt, c, "frame", t))
             if self.enhancer is not None and self.enhancer.score(txt, c) < 0.9 and not self._settled(reads):
@@ -495,7 +502,7 @@ class PlateReader:
         if self.enhancer is not None:
             fused = Enhancer.fuse([c for _, c, _, _ in crops])
             if fused is not None:
-                txt, c = self.reader.read(fused)
+                txt, c = self.read(fused)
                 if txt:
                     reads.append((txt, c, "multi-frame", best_crop[0]))
                 r = self.enhancer.best_read(fused, self.reader, float(np.median([a for *_, a in crops])),
@@ -518,6 +525,8 @@ class PlateReader:
                         method = "ocr+vlm"
                 except Exception as e:
                     log.warning("  VLM plate read failed: %s", e)
+                    if self.on_vlm_error:
+                        self.on_vlm_error(e)
         out = {"text": text, "confidence": conf if text else 0.0, "valid_format": valid if text else False,
                "t_off": best_crop[0], "crop": best_crop[1], "enhanced": enhanced, "box": best_crop[2],
                "reads": [{"text": r[0], "conf": round(r[1], 3), "source": r[2], "t_off": round(r[3], 2)} for r in reads],
