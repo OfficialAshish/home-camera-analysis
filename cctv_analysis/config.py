@@ -53,6 +53,18 @@ DEFAULT_VLM_PROMPT = (
 )
 
 
+# Speed presets (field overrides). Used by the notebook, the CLI (--preset) and the desktop app.
+PRESETS = {
+    "fast":     dict(motion_fps=3, detect_fps=3, detector_model="yolo26n.pt", detector_fallbacks=["yolo11n.pt"],
+                     use_pose=False, det_imgsz=640, detect_width=960, semantic_model="google/siglip2-base-patch16-224"),
+    "balanced": dict(motion_fps=4, detect_fps=5, detector_model="yolo26s.pt", detector_fallbacks=["yolo11s.pt"],
+                     use_pose=True, det_imgsz=960, detect_width=1280, semantic_model="google/siglip2-base-patch16-224"),
+    "accurate": dict(motion_fps=5, detect_fps=8, detector_model="yolo26m.pt", detector_fallbacks=["yolo11m.pt"],
+                     use_pose=True, pose_model="yolo26s-pose.pt", det_imgsz=1280, detect_width=1920,
+                     semantic_model="google/siglip2-so400m-patch14-384", vlm_model="Qwen/Qwen3-VL-4B-Instruct"),
+}
+
+
 @dataclass
 class Config:
     # ---------------------------------------------------------------- paths

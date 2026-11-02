@@ -7,9 +7,11 @@ this module re-reads those frames at full resolution and:
    plate detector (ONNX, MIT); ``classic``: OpenCV morphology (no download needed);
 2. reads it – ``fast-plate-ocr`` (ONNX, MIT, plate-specialised, per-character confidence) or the
    generic OCR engine (RapidOCR / Tesseract);
-3. with ``plate_enhance``: also reads an enhanced crop (super-resolution ×4, CLAHE, unsharp mask)
-   and a multi-frame fusion (crops from several frames aligned with ECC and median-stacked –
-   removes noise/blur of a fast vehicle better than any single frame);
+3. with ``plate_enhance`` (fast vehicles): motion deblurring – the track gives the direction of
+   motion, so the blur is modelled as a linear PSF along it; Wiener deconvolution is run for a
+   range of blur lengths and the reconstruction the plate OCR is most confident in (and that
+   fits the plate format) is kept. Plus a multi-frame fusion (crops from several frames
+   aligned with ECC and median-stacked) that is deblurred the same way;
 4. with ``plate_vlm_read``: asks the vision-language model when OCR confidence stays low;
 5. corrects letter/digit confusions against the plate format (Indian formats incl. BH series)
    and votes across all reads, character by character.
@@ -29,7 +31,6 @@ log = logging.getLogger("cctv")
 
 PLATE_DET_MODEL = "yolo-v9-t-384-license-plate-end2end"
 PLATE_OCR_MODEL = "cct-s-v2-global-model"
-FSRCNN_URL = "https://github.com/Saafke/FSRCNN_Tensorflow/raw/master/models/FSRCNN_x4.pb"
 
 IN_STATES = {"AN", "AP", "AR", "AS", "BR", "CG", "CH", "DD", "DL", "DN", "GA", "GJ", "HP", "HR", "JH", "JK",
              "KA", "KL", "LA", "LD", "MH", "ML", "MN", "MP", "MZ", "NL", "OD", "OR", "PB", "PY", "RJ", "SK",
@@ -72,7 +73,8 @@ def _fit(text: str, classes: str) -> Optional[Tuple[str, int]]:
 
 
 _LETTER_ALTS = {"0": "ODQ", "1": "IL", "2": "Z", "4": "A", "5": "S", "6": "G", "7": "T", "8": "B",
-                "O": "D", "D": "O", "I": "L", "L": "I", "U": "W", "V": "W"}
+                "O": "D", "D": "O", "I": "L", "L": "I", "U": "W", "V": "W", "H": "MN", "M": "HN", "N": "MH",
+                "W": "M"}
 
 
 def _state_fix(two: str) -> str:
@@ -86,19 +88,27 @@ def _state_fix(two: str) -> str:
 
 
 def _in_templates(n: int):
-    for d in (2, 1):                 # district digits
-        for s in (2, 1, 3, 0):       # series letters
+    """State (2 letters) + RTO (2 digits, 1 for some older plates) + series (1-3 letters; none
+    only on old two-digit-RTO plates) + 4 digits; or Bharat series 22BH1234AB."""
+    for d in (2, 1):
+        for s in (2, 1, 3, 0):
+            if s == 0 and d == 1:
+                continue
             if 2 + d + s + 4 == n:
                 yield "LL" + "D" * d + "L" * s + "DDDD"
     if n in (9, 10):                 # Bharat series: 22BH1234AB
         yield "DDLLDDDD" + "L" * (n - 8)
 
 
-def format_plate(text: str, region: str = "IN") -> Tuple[str, bool]:
-    """(best corrected text, matches the regional format)."""
+def plate_fit(text: str, region: str = "IN") -> Tuple[str, float]:
+    """(corrected text, fit 0..1): 1.0 = matches the regional format as read; each letter/digit
+    substitution needed costs a quarter; more than one substitution = not a plate (0.3) – a
+    truncated read must never be 'corrected' into a plausible but wrong plate."""
     t = normalize(text)
-    if region != "IN" or not t:
-        return t, bool(t)
+    if not t:
+        return "", 0.0
+    if region != "IN":
+        return t, 1.0
     best = None
     for tpl in _in_templates(len(t)):
         r = _fit(t, tpl)
@@ -110,15 +120,20 @@ def format_plate(text: str, region: str = "IN") -> Tuple[str, bool]:
             continue
         if not bh and fixed[:2] not in IN_STATES:
             state = _state_fix(t[:2])
-            if state:
-                fixed, cost = state + fixed[2:], cost + 1
-            else:
-                cost += 3
+            if not state:
+                continue
+            fixed, cost = state + fixed[2:], cost + 1
         if best is None or cost < best[1]:
             best = (fixed, cost)
-    if best is None or best[1] >= 3:
-        return t, False
-    return best[0], True
+    if best is None or best[1] > 1:
+        return t, 0.3
+    return best[0], 1.0 - 0.25 * best[1]
+
+
+def format_plate(text: str, region: str = "IN") -> Tuple[str, bool]:
+    """(best corrected text, matches the regional format with at most one correction)."""
+    t, fit = plate_fit(text, region)
+    return t, fit > 0.5
 
 
 def edit_distance(a: str, b: str) -> int:
@@ -129,6 +144,12 @@ def edit_distance(a: str, b: str) -> int:
             cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
         prev = cur
     return prev[-1]
+
+
+def is_reportable(text: str, confidence: float, valid_format: bool) -> bool:
+    """Shown in event summaries / matched against the watchlist. Partial reads (vehicle cut by
+    the frame edge, 'MH12') stay in the plates table as evidence but are not reported."""
+    return bool(text) and (valid_format or (len(text) >= 6 and confidence >= 0.7))
 
 
 def watchlist_match(text: str, watchlist: List[str], max_edits: int = 1) -> str:
@@ -149,9 +170,11 @@ def watchlist_match(text: str, watchlist: List[str], max_edits: int = 1) -> str:
 def vote(reads: List[Tuple[str, float]], region: str = "IN") -> Tuple[str, float, bool]:
     """Fuse several (text, confidence) reads. Same-length candidates vote per character, weighted
     by confidence; the most supported length wins. Returns (text, confidence 0..1, valid format)."""
-    reads = [(format_plate(t, region)[0], float(c)) for t, c in reads if normalize(t)]
-    if not reads:
+    fmt = [(plate_fit(t, region), float(c)) for t, c in reads if normalize(t)]
+    if not fmt:
         return "", 0.0, False
+    # weight = confidence x format fit: garbage from blurred frames and corrected reads count less
+    reads = [(f, c * fit) for (f, fit), c in fmt]
     by_len = defaultdict(list)
     for t, c in reads:
         by_len[len(t)].append((t, c))
@@ -165,7 +188,7 @@ def vote(reads: List[Tuple[str, float]], region: str = "IN") -> Tuple[str, float
         chars.append(ch)
         agree.append(s / sum(w.values()))
     fused, valid = format_plate("".join(chars), region)
-    mean_conf = sum(c for _, c in group) / len(group)
+    mean_conf = min(1.0, sum(c for _, c in group) / len(group))
     support = len(group) / len(reads)
     conf = float(min(agree) * (0.5 + 0.5 * mean_conf) * (0.6 + 0.4 * support))
     return fused, round(conf, 3), valid
@@ -178,48 +201,83 @@ def sharpness(img: np.ndarray) -> float:
     return float(cv2.Laplacian(g, cv2.CV_32F).var())
 
 
+def motion_psf(length: int, angle: float) -> np.ndarray:
+    """Normalised linear motion-blur kernel of `length` px along `angle` (radians, image coords)."""
+    size = length + 2
+    k = np.zeros((size, size), np.float32)
+    c = (size - 1) / 2
+    for i in range(length):
+        t = i - (length - 1) / 2
+        k[int(round(c + t * np.sin(angle))), int(round(c + t * np.cos(angle)))] = 1
+    return k / k.sum()
+
+
+def wiener_deconvolve(img: np.ndarray, psf: np.ndarray, k: float) -> np.ndarray:
+    pad = psf.shape[0] * 2
+    out = np.empty(img.shape, np.float32)
+    chans = img.shape[2] if img.ndim == 3 else 1
+    for ch in range(chans):
+        x = img[:, :, ch] if img.ndim == 3 else img
+        f = cv2.copyMakeBorder(x, pad, pad, pad, pad, cv2.BORDER_REFLECT).astype(np.float32) / 255
+        h = np.zeros_like(f)
+        h[:psf.shape[0], :psf.shape[1]] = psf
+        h = np.roll(h, (-(psf.shape[0] // 2), -(psf.shape[1] // 2)), (0, 1))
+        H = np.fft.fft2(h)
+        r = np.real(np.fft.ifft2(np.conj(H) / (np.abs(H) ** 2 + k) * np.fft.fft2(f)))[pad:-pad, pad:-pad]
+        if img.ndim == 3:
+            out[:, :, ch] = r
+        else:
+            out = r
+    return np.clip(out * 255, 0, 255).astype(np.uint8)
+
+
 class Enhancer:
-    """Super-resolution (OpenCV dnn_superres FSRCNN ×4 when available, else Lanczos), local
-    contrast (CLAHE) and unsharp masking; plus multi-frame aligned fusion."""
+    """Blind motion deblurring scored by the OCR, and multi-frame aligned fusion."""
+    method = "deblur"
+    LENGTHS = tuple(range(3, 27))         # blur length in px at 2x upscale (every length: the true one must be tried)
+    NOISE = (0.002, 0.006, 0.02)
 
-    def __init__(self):
-        self.sr = None
-        try:
-            if hasattr(cv2, "dnn_superres"):
-                from . import modelcache
-                p = os.path.join(modelcache.sub("plates"), "FSRCNN_x4.pb")
-                if not os.path.exists(p):
-                    import urllib.request
-                    urllib.request.urlretrieve(FSRCNN_URL, p + ".part")
-                    os.replace(p + ".part", p)
-                sr = cv2.dnn_superres.DnnSuperResImpl_create()
-                sr.readModel(p)
-                sr.setModel("fsrcnn", 4)
-                self.sr = sr
-        except Exception as e:
-            log.info("plate super-resolution model unavailable (%s) – using Lanczos upscaling", e)
-        self.method = "fsrcnn-x4" if self.sr is not None else "lanczos-x4"
+    def __init__(self, region: str = "IN"):
+        self.region = region
 
-    def upscale(self, img: np.ndarray) -> np.ndarray:
-        if self.sr is not None and img.shape[0] * img.shape[1] <= 160 * 480:
-            try:
-                return self.sr.upsample(img)
-            except Exception:
-                pass
-        return cv2.resize(img, None, fx=4, fy=4, interpolation=cv2.INTER_LANCZOS4)
+    def score(self, text: str, conf: float) -> float:
+        f, fit = plate_fit(text, self.region)
+        return conf * fit * min(1.0, len(f) / 10) if f else 0.0
 
-    def enhance(self, img: np.ndarray) -> np.ndarray:
-        up = self.upscale(img)
-        lab = cv2.cvtColor(up, cv2.COLOR_BGR2LAB)
-        lab[:, :, 0] = cv2.createCLAHE(2.0, (8, 8)).apply(lab[:, :, 0])
-        up = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
-        blur = cv2.GaussianBlur(up, (0, 0), 2.0)
-        return cv2.addWeighted(up, 1.7, blur, -0.7, 0)
+    def best_read(self, crop: np.ndarray, reader, angle: float = 0.0, inner=None, second=None):
+        """(text, conf, image) of the most convincing deblurred reconstruction, or None.
+        `crop` should include a margin around the plate; `inner` = plate rect (x1, y1, x2, y2) in it.
+        The plate reader scores every blur length; the 3 best reconstructions are also read by
+        `second` (general OCR), which is more tolerant of deconvolution ringing (measured: 7/12
+        exact reads vs 0/12 with the plate reader alone on H.264-like compressed blurred video)."""
+        up = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        cands = []
+        for L in self.LENGTHS:
+            psf = motion_psf(L, angle)
+            for k in self.NOISE:
+                img = wiener_deconvolve(up, psf, k)
+                if inner is not None:
+                    x1, y1, x2, y2 = (2 * v for v in inner)
+                    img = img[y1:y2, x1:x2]
+                txt, c = reader.read(img)
+                if txt:
+                    cands.append((self.score(txt, c), txt, c, img))
+        if not cands:
+            return None
+        cands.sort(key=lambda r: -r[0])
+        best = cands[0]
+        if second is not None:
+            for _, _, _, img in cands[:3]:
+                txt, c = second.read(img)
+                sc = self.score(txt, c)
+                if txt and sc > best[0]:
+                    best = (sc, txt, c, img)
+        return best[1:]
 
     @staticmethod
     def fuse(crops: List[np.ndarray]) -> Optional[np.ndarray]:
         """Align plate crops from several frames to the sharpest one (ECC, affine) and take the
-        per-pixel median: noise and single-frame motion blur average out."""
+        per-pixel median: noise and single-frame artefacts average out."""
         crops = [c for c in crops if c is not None and c.size and min(c.shape[:2]) >= 6]
         if len(crops) < 2:
             return None
@@ -307,7 +365,8 @@ class FastPlateOCR:
         if not p:
             return "", 0.0
         p = p[0]
-        probs = np.asarray(getattr(p, "char_probs", []) or [0.0], dtype=np.float32)
+        probs = getattr(p, "char_probs", None)
+        probs = np.asarray(probs if probs is not None else [], dtype=np.float32)
         return normalize(p.plate), float(probs.mean()) if probs.size else 0.0
 
 
@@ -353,14 +412,17 @@ class PlateReader:
                 if cfg.plate_ocr == "fast-plate-ocr":
                     raise
                 log.warning("plate OCR model unavailable (%s) – using generic OCR", e)
+        generic = GenericPlateOCR(ocr_getter())
         if self.reader is None:
-            self.reader = GenericPlateOCR(ocr_getter())
-        self.enhancer = Enhancer() if cfg.plate_enhance else None
+            self.reader = generic
+        self.second = generic if (generic.ocr and self.reader is not generic) else None
+        self.enhancer = Enhancer(cfg.plate_region) if cfg.plate_enhance else None
         log.info("Plate reading: detector=%s, ocr=%s, enhance=%s, vlm=%s", self.detector.name, self.reader.name,
                  self.enhancer.method if self.enhancer else "off", bool(cfg.plate_vlm_read))
 
-    def locate(self, frame: np.ndarray, vbox) -> Optional[Tuple[np.ndarray, List[int], float]]:
-        """Best plate crop inside a vehicle box (full-resolution pixel coords)."""
+    def locate(self, frame: np.ndarray, vbox):
+        """Best plate inside a vehicle box (full-resolution pixel coords):
+        (crop, plate box in the frame, detector confidence, (context crop, plate rect inside it))."""
         H, W = frame.shape[:2]
         x1, y1, x2, y2 = [int(v) for v in vbox]
         px, py = int(0.06 * (x2 - x1)), int(0.06 * (y2 - y1))
@@ -379,38 +441,52 @@ class PlateReader:
         crop = roi[cy1:cy2, cx1:cx2].copy()
         if crop.size == 0:
             return None
-        return crop, [x1 + bx1, y1 + by1, x1 + bx2, y1 + by2], conf
+        # wider context for deblurring: motion blur smears characters beyond the plate box
+        fx1, fy1, fx2, fy2 = x1 + cx1, y1 + cy1, x1 + cx2, y1 + cy2
+        mx, my = max(16, int(0.4 * bw)), max(10, int(0.6 * bh))
+        kx1, ky1, kx2, ky2 = max(0, fx1 - mx), max(0, fy1 - my), min(W, fx2 + mx), min(H, fy2 + my)
+        context = (frame[ky1:ky2, kx1:kx2].copy(), (fx1 - kx1, fy1 - ky1, fx2 - kx1, fy2 - ky1))
+        return crop, [x1 + bx1, y1 + by1, x1 + bx2, y1 + by2], conf, context
 
-    def read_track(self, samples: List[Tuple[float, np.ndarray, list]]) -> Optional[dict]:
-        """samples: (t_offset, full-res frame, vehicle box in that frame). Returns the fused result."""
+    def read_track(self, samples: List[tuple]) -> Optional[dict]:
+        """samples: (t_offset, full-res frame, vehicle box in that frame[, motion angle in radians]).
+        Returns the fused result (or None when no plate was found in any sample)."""
         cfg = self.cfg
         crops, reads = [], []
-        for t, frame, vbox in samples:
+        enhanced = None
+        for smp in samples:
+            t, frame, vbox = smp[:3]
+            angle = smp[3] if len(smp) > 3 else 0.0
             loc = self.locate(frame, vbox)
             if loc is None:
                 continue
-            crop, box, dconf = loc
-            crops.append((t, crop, box, dconf))
+            crop, box, dconf, (context, inner) = loc
+            crops.append((t, crop, box, angle))
             txt, c = self.reader.read(crop)
             if txt:
                 reads.append((txt, c, "frame", t))
-            if self.enhancer is not None:
-                txt, c = self.reader.read(self.enhancer.enhance(crop))
-                if txt:
-                    reads.append((txt, c, "enhanced", t))
+            if self.enhancer is not None and self.enhancer.score(txt, c) < 0.9:
+                r = self.enhancer.best_read(context, self.reader, angle, inner, self.second)
+                if r:
+                    reads.append((r[0], r[1], "deblur", t))
+                    if enhanced is None or self.enhancer.score(r[0], r[1]) > enhanced[0]:
+                        enhanced = (self.enhancer.score(r[0], r[1]), r[2])
         if not crops:
             return None
         best_crop = max(crops, key=lambda x: sharpness(x[1]) * x[1].shape[1])
-        enhanced = None
         if self.enhancer is not None:
             fused = Enhancer.fuse([c for _, c, _, _ in crops])
             if fused is not None:
-                enhanced = self.enhancer.enhance(fused)
-                txt, c = self.reader.read(enhanced)
+                txt, c = self.reader.read(fused)
                 if txt:
                     reads.append((txt, c, "multi-frame", best_crop[0]))
-            if enhanced is None:
-                enhanced = self.enhancer.enhance(best_crop[1])
+                r = self.enhancer.best_read(fused, self.reader, float(np.median([a for *_, a in crops])),
+                                            second=self.second)
+                if r:
+                    reads.append((r[0], r[1], "multi-frame+deblur", best_crop[0]))
+                    if enhanced is None or self.enhancer.score(r[0], r[1]) > enhanced[0]:
+                        enhanced = (self.enhancer.score(r[0], r[1]), r[2])
+        enhanced = enhanced[1] if enhanced else None
         text, conf, valid = vote([(r[0], r[1]) for r in reads], cfg.plate_region)
         method = "ocr"
         if cfg.plate_vlm_read and (not text or conf < 0.6) and self.vlm_getter is not None:
@@ -424,10 +500,8 @@ class PlateReader:
                         method = "ocr+vlm"
                 except Exception as e:
                     log.warning("  VLM plate read failed: %s", e)
-        if not text:
-            return {"text": "", "confidence": 0.0, "valid_format": False, "reads": [], "t_off": best_crop[0],
-                    "crop": best_crop[1], "enhanced": enhanced, "box": best_crop[2], "method": "unreadable"}
-        return {"text": text, "confidence": conf, "valid_format": valid, "t_off": best_crop[0],
-                "reads": [{"text": r[0], "conf": round(r[1], 3), "source": r[2], "t_off": round(r[3], 2)} for r in reads],
-                "crop": best_crop[1], "enhanced": enhanced, "box": best_crop[2],
-                "method": method + ("+enhanced" if self.enhancer is not None else "")}
+        out = {"text": text, "confidence": conf if text else 0.0, "valid_format": valid if text else False,
+               "t_off": best_crop[0], "crop": best_crop[1], "enhanced": enhanced, "box": best_crop[2],
+               "reads": [{"text": r[0], "conf": round(r[1], 3), "source": r[2], "t_off": round(r[3], 2)} for r in reads],
+               "method": (method + ("+deblur" if self.enhancer is not None else "")) if text else "unreadable"}
+        return out

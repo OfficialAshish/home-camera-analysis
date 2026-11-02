@@ -320,9 +320,27 @@ def iter_frames(path: str, fps: float, width: int, start: float = 0.0,
 
 
 def read_frame_at(path: str, t: float, width: int = 0, src_size=(0, 0)) -> Optional[np.ndarray]:
+    """The frame shown at time t (first frame with pts >= t), resized to `width` (0 = full size).
+    Accurate seek + '-frames:v 1' – an fps filter here would return the *last* frame of the
+    first output interval (~0.5 s late), which mis-crops moving objects."""
+    sw, sh = src_size
+    if FFMPEG and sw and sh:
+        w = int(min(width, sw) if width else sw) // 2 * 2
+        h = int(round(sh * w / sw)) // 2 * 2
+        cmd = [FFMPEG, "-nostdin", "-v", "error", "-ss", f"{max(0.0, t):.3f}", *_input_args(path), "-i", path,
+               "-map", "0:v:0", "-an", "-sn", "-frames:v", "1", "-vf", f"scale={w}:{h}:flags=area",
+               "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=120)
+            if len(r.stdout) == w * h * 3:
+                return np.frombuffer(r.stdout, np.uint8).reshape((h, w, 3)).copy()
+        except Exception:
+            pass
     for _, f in iter_frames(path, 1.0, width, start=max(0.0, t), duration=1.0, src_size=src_size):
         return f.copy()
     return None
+
+# ------------------------------------------------------------- cameras
 
 def _device_serial(base: str) -> str:
     """Camera serial prefix of cloud exports, e.g. 'G225087WSFW' in 'G225087WSFW-cloud-18056409.mp4'."""

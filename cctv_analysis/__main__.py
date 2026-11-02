@@ -12,10 +12,12 @@ def main():
     ap.add_argument("--output", required=False)
     ap.add_argument("--work", default=None)
     ap.add_argument("--config", default=None, help="JSON file with Config fields")
+    ap.add_argument("--preset", choices=["fast", "balanced", "accurate"], help="speed preset (applied before overrides)")
     ap.add_argument("--reports-only", action="store_true", help="rebuild reports from the database")
     ap.add_argument("overrides", nargs="*", help="field=value (value parsed as JSON when possible)")
     a = ap.parse_args()
-    d = {}
+    from .config import PRESETS
+    d = dict(PRESETS[a.preset]) if a.preset else {}
     if a.config:
         with open(a.config) as fh:
             d.update(json.load(fh))

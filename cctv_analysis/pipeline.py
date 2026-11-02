@@ -43,16 +43,19 @@ class Cancelled(Exception):
 def setup_logging(out_dir: str, verbose: bool = True):
     os.makedirs(out_dir, exist_ok=True)
     log.setLevel(logging.INFO)
-    for h in list(log.handlers):
-        h.close()
-    log.handlers.clear()
+    for h in list(log.handlers):            # replace our own handlers; keep ones the app attached
+        if getattr(h, "_cctv_run", False):
+            h.close()
+            log.removeHandler(h)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s", "%H:%M:%S")
     fh = logging.FileHandler(os.path.join(out_dir, "run_log.txt"), encoding="utf-8")
     fh.setFormatter(fmt)
+    fh._cctv_run = True
     log.addHandler(fh)
     if verbose:
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
+        sh._cctv_run = True
         log.addHandler(sh)
     log.propagate = False
 
@@ -93,6 +96,16 @@ def frame_brightness(frames: List[np.ndarray]) -> float:
         if c.size:
             vals.append(float(np.percentile(c, 99)))
     return float(np.median(vals)) if vals else 0.0
+
+
+def _motion_angle(obs, t: float) -> float:
+    """Direction of motion (radians, image coords) of a track around time t – the direction of
+    any motion blur on the object."""
+    i = min(range(len(obs)), key=lambda j: abs(obs[j][0] - t))
+    a, b = obs[max(0, i - 1)], obs[min(len(obs) - 1, i + 1)]
+    dx = (b[2][0] + b[2][2] - a[2][0] - a[2][2]) / 2
+    dy = (b[2][1] + b[2][3] - a[2][1] - a[2][3]) / 2
+    return float(np.arctan2(dy, dx)) if (dx or dy) else 0.0
 
 
 class Analyzer:
@@ -694,12 +707,13 @@ class Analyzer:
                     continue
                 self._check_cancel()
                 samples = []
+                obs = tracks[tid]["obs"]
                 for _, t, nb in sorted(hp, key=lambda x: x[1]):
                     full = V.read_frame_at(path, t, 0, (meta["width"], meta["height"]))
                     if full is None:
                         continue
                     fh, fw = full.shape[:2]
-                    samples.append((t, full, [nb[0] * fw, nb[1] * fh, nb[2] * fw, nb[3] * fh]))
+                    samples.append((t, full, [nb[0] * fw, nb[1] * fh, nb[2] * fw, nb[3] * fh], _motion_angle(obs, t)))
                 try:
                     res = plate_reader.read_track(samples)
                 except Exception as ex:
@@ -707,8 +721,9 @@ class Analyzer:
                     res = None
                 if not res:
                     continue
-                from .plates import watchlist_match
-                wl = watchlist_match(res["text"], cfg.plate_watchlist, cfg.plate_watchlist_max_edits)
+                from .plates import is_reportable, watchlist_match
+                ok = is_reportable(res["text"], res["confidence"], res["valid_format"])
+                wl = watchlist_match(res["text"], cfg.plate_watchlist, cfg.plate_watchlist_max_edits) if ok else ""
                 cp = _imwrite(os.path.join(edir, "plates", f"track{tid:03d}_plate.jpg"), res["crop"], 95)
                 ep = _imwrite(os.path.join(edir, "plates", f"track{tid:03d}_enhanced.jpg"), res["enhanced"], 95) \
                     if res.get("enhanced") is not None else ""
@@ -718,7 +733,7 @@ class Analyzer:
                        "n_reads": len(res["reads"]), "reads": res["reads"], "method": res["method"],
                        "crop_path": cp, "enhanced_path": ep, "watchlist": wl}
                 self.store.insert("plates", row, replace=False)
-                if res["text"]:
+                if ok:
                     plates.append({"text": res["text"], "confidence": res["confidence"], "track": tid,
                                    "vehicle": row["vehicle"], "watchlist": wl})
                     id_map[tid] = res["text"]
