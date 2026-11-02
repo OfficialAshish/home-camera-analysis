@@ -237,7 +237,7 @@ def highlight_day(out: str, day: str) -> Optional[dict]:
                        "video": s["rel_path"], "offset": s["start_off"]} for s in segs]}
 
 
-_TEXTS = {}
+_TEXTS: dict = {}
 _TEXTS_LOCK = threading.Lock()
 
 
