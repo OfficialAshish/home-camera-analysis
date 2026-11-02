@@ -9,3 +9,9 @@ __pycache__/
 test_run.log
 *.log
 .test_models/
+
+# secrets that must never be committed
+signing_key.pem
+*.lic
+secrets.json
+.cctv-license/
