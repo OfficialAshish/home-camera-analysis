@@ -79,3 +79,35 @@ def test_search_by_photo_rejects_bad_input(env):
     assert _search(env, b"not an image").status_code == 400
     r = env["c"].post("/api/results/face-search", query_string={"out": env["out"]}, headers=H)
     assert r.status_code == 400
+
+
+def test_redacted_evidence_has_no_detectable_faces(env):
+    import json
+    import sqlite3
+    import zipfile
+
+    import cv2
+    import numpy as np
+
+    from cctv_analysis.evidence import export_evidence, verify_package
+    from cctv_analysis.faces import FaceEngine
+    db = sqlite3.connect(os.path.join(env["out"], "analysis.db"))
+    eid, snaps = db.execute("SELECT event_id, snapshots FROM events WHERE faces_detected > 0 ORDER BY faces_detected DESC").fetchone()
+    cfg = Config(output_dir=env["out"], model_cache_dir=MODELS)
+    fe = FaceEngine(cfg)
+    raws = [s["raw"] for s in json.loads(snaps) if s.get("raw")]
+    before = sum(len(fe.detect_full(cv2.imread(p))) for p in raws)
+    assert before >= 1                                                # positive control: faces are there
+    plain = export_evidence(env["out"], [eid], os.path.join(env["out"], "exports", "plain.zip"), cfg)
+    red = export_evidence(env["out"], [eid], os.path.join(env["out"], "exports", "red.zip"), cfg, redact=True)
+    with zipfile.ZipFile(plain["zip"]) as z:
+        assert any(n.endswith("original_segment.mp4") for n in z.namelist())
+    with zipfile.ZipFile(red["zip"]) as z:
+        names = z.namelist()
+        assert not any("original_segment" in n for n in names)          # unblurred original left out
+        assert json.loads(z.read("manifest.json"))["redacted"] is True
+        imgs = [cv2.imdecode(np.frombuffer(z.read(n), np.uint8), cv2.IMREAD_COLOR)
+                for n in names if n.endswith("_raw.jpg")]
+    after = sum(len(fe.detect_full(i)) for i in imgs)
+    assert len(imgs) == len(raws) and after == 0, (before, after)
+    assert verify_package(red["zip"])["ok"]
