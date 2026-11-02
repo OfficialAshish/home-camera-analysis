@@ -93,7 +93,32 @@ tests; PyInstaller spec + Windows build script with self-test; single sources fo
 time resolution, face enrolment, plate matching and the clock-reading rule; documentation set
 with index and lifecycle status (`docs/INDEX.md`).
 
-## 5. Commits (all on `origin/feature/enterprise-cctv-platform`)
-See the PR for the final list; at the time of writing, in order:
-ff668a2, 6b9ab07, 4f10092, c074864, 3a229b2, b05705a, b05c395, c278bad, 8b962fa, 73a8270,
-97ab2a3, babea31, bd21208, 0554a4a, 31efd72, abe7dd0, 4907d13, and this status commit.
+## 5. Verification on clean machines (GitHub Actions)
+On commit `7a0c369`: **lint ✓** (ruff, mypy, notebook in sync), **test ✓** (full suite incl. the
+Playwright browser test, ubuntu-latest, clean install), **windows-app ✓** (`CCTVAnalysis.exe` built on
+windows-latest with an LGPL ffmpeg; its self-test (modules, UI, ffmpeg, torchvision NMS, offline OCR)
+passed). Locally: 74 passed / 2 release-only deselected (8 min 53 s); mutation check 23/23.
+Two CI-only failures were found and fixed on the way (rows 18 and the UI-test wait in `7a0c369`).
+
+## 6. Commits (in order, all on `origin/feature/enterprise-cctv-platform`, merged to `main` via PR #1)
+| commit | summary |
+|---|---|
+| ff668a2 | timeline fix (DVR clock OCR, folder-date checks, per-event clock), chronological planning, clean reels in YYYY/MM-Mon, camera naming |
+| 6b9ab07 | desktop app, licences, evidence export, audit log, reviews, ANPR, exact-frame seek fix |
+| 4f10092 | plate tests, faster deblur, Playwright UI test |
+| c074864 | retime of analysed folders; stale reels/weekly workbooks removed |
+| 3a229b2 | Number Plates / Footfall sheets, reviews in Excel, footfall test on real footage |
+| b05705a | no silent success, VLM breaker, encoder auto-detect, packaging, CI, lint/types, mutation harness, docs |
+| b05c395 | packaging: torchvision operators bundled; release-credential tests; docs |
+| c278bad | hot-path optimisations (soak 16 → 2 731 requests/25 s) |
+| 8b962fa | type annotation fix |
+| 73a8270 | notebook regenerated; secrets ignored |
+| 97ab2a3 | migration and reel-selection tests |
+| babea31 | lint fix |
+| bd21208 | clock-reading cost bounded; measured estimator defaults; README |
+| 0554a4a | search by photo; upload limits; CI concurrency |
+| 31efd72 | reel-order test data fixed (mutation survivor); CI failure summaries on the PR; docs |
+| abe7dd0 | UI race fix (latest request wins) with failing-without-fix test |
+| 4907d13 | redaction test |
+| 7a0c369 | UI test waits for its own query; status document |
+| (this commit) | status document: CI results and commit list |
