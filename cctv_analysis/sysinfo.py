@@ -17,21 +17,23 @@ from typing import Dict, List, Optional
 
 log = logging.getLogger("cctv")
 
-# Rates used before a benchmark has run (measured on a 4-core 2.x GHz laptop CPU, no GPU,
-# with this repository's defaults; see docs/PERFORMANCE.md). GPU figures are not measured here.
+# Rates used before a benchmark has run: measured with `benchmark()` (balanced preset) on the
+# development machine – Intel Xeon 2.8 GHz, 4 vCPU, no GPU – on OpenCV's vtest.avi (detector,
+# motion, encode) and a cloud clip with a DVR clock (OCR). See docs/PERFORMANCE.md. The detector
+# rate includes pose. VLM figures are not measured here (labelled assumptions).
 DEFAULT_RATES = {
-    "motion_x_realtime": 40.0,        # pass-1 decode + motion analysis, × real time
-    "detect_fps": 9.0,                # YOLO frames per second (detector at det_imgsz, CPU)
-    "face_s_per_frame": 0.03,         # extra face work per detection frame with people
-    "pose_s_per_frame": 0.08,
-    "ocr_s_per_read": 0.35,           # one DVR-clock OCR read
-    "reel_x_realtime": 6.0,           # highlight-reel encode, × real time
-    "plate_s_per_track": 1.5,
-    "plate_deblur_s_per_track": 25.0,
-    "vlm_s_per_event_transformers_cpu": 45.0,
-    "vlm_s_per_event_transformers_gpu": 4.0,
-    "vlm_s_per_event_openai": 8.0,
-    "semantic_s_per_event": 1.0,
+    "motion_x_realtime": 9.9,         # pass-1 decode + motion analysis, × real time
+    "detect_fps": 2.9,                # detector (+ pose) frames per second
+    "face_s_per_frame": 0.03,         # extra face work per detection frame with people (assumption)
+    "pose_s_per_frame": 0.0,          # included in detect_fps
+    "ocr_s_per_read": 0.7,            # one DVR-clock read on a frame that has a clock
+    "reel_x_realtime": 10.3,          # highlight-reel encode, × real time
+    "plate_s_per_track": 1.5,         # measured: ~12 s plain vs ~45-110 s enhanced per 1-car clip
+    "plate_deblur_s_per_track": 60.0,
+    "vlm_s_per_event_transformers_cpu": 45.0,     # assumption (2B model, CPU)
+    "vlm_s_per_event_transformers_gpu": 4.0,      # assumption
+    "vlm_s_per_event_openai": 8.0,                # assumption (depends on the server)
+    "semantic_s_per_event": 1.0,                  # assumption
 }
 ASSUMED_MOTION_FRACTION = 0.15        # share of footage with movement (typical shop/home DVR)
 ASSUMED_EVENT_SECONDS = 30.0
@@ -286,4 +288,4 @@ def estimate(cfg, total_seconds: float, n_videos: int, rates: Optional[Dict[str,
             "assumptions": [f"{int(m * 100)}% of the footage contains movement (real share decides the detection time)",
                             f"about one event per {int(ASSUMED_EVENT_SECONDS)} s of movement",
                             "rates measured on this computer" if rates else
-                            "default rates (run the 1-minute benchmark for this computer's real speed)"]}
+                            "rates of a 4-core CPU without GPU (run 'Measure speed' for this computer's real speed)"]}

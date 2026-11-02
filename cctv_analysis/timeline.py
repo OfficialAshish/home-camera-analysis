@@ -275,8 +275,10 @@ def osd_start_time(path: str, meta: dict, ocr, order: str = "auto", hint: Option
         offs.append(dur / 2)
     if samples >= 2 and dur > 4:
         offs.append(dur - 1.5)
-    reads = []
-    for t in offs:
+    reads: List[tuple] = []
+    for n, t in enumerate(offs):
+        if n == 2 and not reads:
+            break                     # no clock in the first two frames: footage without an OSD, stop here
         f = read_frame_at(path, t, 1280, (meta.get("width") or 0, meta.get("height") or 0))
         d = read_clock(f, ocr, order, hint)
         if d and _plausible(d, hint):
@@ -355,11 +357,11 @@ def resolve_start_time(path: str, meta: dict, cfg, ocr=None) -> Tuple[Optional[d
 def event_clock(path: str, meta: dict, start_dt: Optional[dt.datetime], tsrc: str, s: float, cfg, ocr):
     """(base, source) for one event starting at offset `s`: base + offset = clock time.
 
-    When the video time came from the DVR clock or is approximate, the clock is read again at
-    the event start: files stitched from several recordings jump in time, and a disagreement
-    larger than ``osd_event_tolerance`` means the event's own clock reading is the truth."""
-    if not cfg.osd_verify_events or "osd" not in cfg.time_sources or tsrc.startswith(("override", "filename")) \
-            or not ocr:
+    Only when the video time came from the DVR clock: the clock is read again at the event start
+    (files stitched from several recordings jump in time) and a disagreement larger than
+    ``osd_event_tolerance`` means the event's own reading is the truth. Footage whose clock could
+    not be read is not re-read per event (each failed read costs seconds)."""
+    if not cfg.osd_verify_events or not tsrc.startswith("osd") or not ocr:
         return start_dt, tsrc
     f = read_frame_at(path, s + 0.1, 1280, (meta["width"], meta["height"]))
     hint = start_dt.date() if (start_dt and is_exact(tsrc)) else \

@@ -19,7 +19,9 @@ that still list it fail validation with a clear message.
 *Context.* A single file can be stitched from several recordings (the clock jumps inside it).
 *Decision.* `timeline.event_clock`: one OCR read at each event start; if it disagrees with
 `file start + offset` by more than `osd_event_tolerance` (5 s), the event uses its own reading
-(`time_source = osd(...,event)`). Skipped for times from file names/overrides.
+(`time_source = osd(...,event)`). Only for files whose time came from the clock; footage without a
+readable clock is not re-read per event, and its file-level search stops after two empty frames
+(an empty read costs up to ~5 s on a busy CPU-only scene, measured on `vtest.avi`).
 
 ## D3 — Process videos in chronological order
 A planning pass (probe + time) sorts videos by real recording time (approximate/unknown last,

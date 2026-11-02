@@ -90,3 +90,33 @@ def test_stitched_file_is_flagged_discontinuous(tmp_path):
 def test_config_rejects_removed_time_source():
     assert any("vlm_osd" in x for x in Config(time_sources=["vlm_osd"]).validate())
     assert Config().validate() == []
+
+
+def test_footage_without_a_clock_costs_at_most_two_reads(tmp_path):
+    """Busy footage without an OSD makes each OCR read expensive; stop after two empty frames."""
+    import shutil
+
+    from cctv_analysis.ocr import OCREngine
+
+    class Counting(OCREngine):
+        name = "counting"
+        calls = 0
+
+        def read(self, img):
+            Counting.calls += 1
+            return [("no clock here", 0.9)]
+    p = str(tmp_path / "plain.mp4")
+    make_cloud_clips.make(str(tmp_path / "src"), 1)
+    shutil.copy(next((tmp_path / "src" / "31Oct26New").iterdir()), p)
+    import cv2
+    import numpy as np
+    vw = cv2.VideoWriter(p, cv2.VideoWriter_fourcc(*"mp4v"), 10, (320, 240))
+    for _ in range(200):
+        vw.write(np.full((240, 320, 3), 90, np.uint8))
+    vw.release()
+    d, detail = T.osd_start_time(p, V.probe(p), Counting(), samples=3)
+    assert d is None and detail == "unreadable"
+    assert Counting.calls <= 2 * 2                      # 2 frames x (top + bottom band)
+    cfg = Config(input_dir=str(tmp_path))
+    base, src = T.event_clock(p, V.probe(p), None, "file-modified(approx)", 5.0, cfg, Counting())
+    assert (base, src) == (None, "file-modified(approx)") and Counting.calls <= 4     # no per-event read
