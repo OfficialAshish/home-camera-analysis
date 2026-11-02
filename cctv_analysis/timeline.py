@@ -359,3 +359,30 @@ def resolve_start_time(path: str, meta: dict, cfg, ocr=None) -> Tuple[Optional[d
                 return d.replace(year=hint.year, month=hint.month, day=hint.day), "folder-date+file-modified(approx)"
             return d, "file-modified(approx)"
     return None, "unknown"
+
+
+def event_clock(path: str, meta: dict, start_dt: Optional[dt.datetime], tsrc: str, s: float, cfg, ocr):
+    """(base, source) for one event starting at offset `s`: base + offset = clock time.
+
+    When the video time came from the DVR clock or is approximate, the clock is read again at
+    the event start: files stitched from several recordings jump in time, and a disagreement
+    larger than ``osd_event_tolerance`` means the event's own clock reading is the truth."""
+    if not cfg.osd_verify_events or "osd" not in cfg.time_sources or tsrc.startswith(("override", "filename")) \
+            or not ocr:
+        return start_dt, tsrc
+    f = read_frame_at(path, s + 0.1, 1280, (meta["width"], meta["height"]))
+    hint = start_dt.date() if (start_dt and is_exact(tsrc)) else \
+        (path_date_hint(path, cfg.input_dir) if cfg.use_path_date_hint else None)
+    d = read_clock(f, ocr, cfg.osd_date_order, hint)
+    if d is None or (hint and abs((d.date() - hint).days) > 1):
+        return start_dt, tsrc
+    zone = start_dt.tzinfo if start_dt else tz(cfg.timezone)
+    clock = d.replace(tzinfo=zone) + dt.timedelta(seconds=0.5)
+    if start_dt is not None and is_exact(tsrc):
+        diff = (clock - (start_dt + dt.timedelta(seconds=s + 0.1))).total_seconds()
+        if abs(diff) <= cfg.osd_event_tolerance:
+            return start_dt, tsrc
+        log.info("  clock at offset %.0fs reads %s (%.0fs from the file start time) – using the event's own clock",
+                 s, d, diff)
+    base = clock - dt.timedelta(seconds=s + 0.1)
+    return base.replace(microsecond=0), f"osd({ocr.name},event)"

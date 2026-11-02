@@ -595,6 +595,39 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         full = _inside(out_param(), request.args.get("p", ""))
         return send_file(full, conditional=True, max_age=3600)
 
+    @app.post("/api/retime")
+    def retime_start():
+        """Re-read recording times of an analysed folder (uses its saved config_used.json)."""
+        out = _abs_dir(body().get("out", ""), "out")
+        cu = os.path.join(out, "config_used.json")
+        if not os.path.exists(cu):
+            raise ApiError(404, "this folder has no config_used.json – it was not produced by an analysis")
+        with open(cu, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        known = set(Config().to_dict())
+        saved = {k: v for k, v in saved.items() if k in known}
+        saved.pop("time_sources", None)                     # always use the current time rules
+        saved.update(output_dir=out, model_cache_dir=os.path.join(data_dir, "models"))
+        if not os.path.isdir(saved.get("input_dir", "")):
+            raise ApiError(400, f"recordings folder of this analysis is not available: {saved.get('input_dir')}")
+        try:
+            cfg = Config.from_dict(saved)
+        except (TypeError, ValueError) as e:
+            raise ApiError(400, str(e))
+
+        def run(job):
+            from ..pipeline import setup_logging
+            from ..retime import retime
+            setup_logging(out, verbose=False)
+            res = retime(cfg, job.update, job.cancel)
+            AuditLog(os.path.join(out, "audit_log.jsonl")).append("retime", **{k: v for k, v in res.items()
+                                                                               if k != "days_affected"})
+            return res
+        job, created = jobs.start("analysis", run, exclusive=True)
+        if not created:
+            raise ApiError(409, "an analysis is already running", job=job.public())
+        return jsonify(job=job.public()), 202
+
     # ------------------------------------------------------------- export
     @app.post("/api/export")
     def export():

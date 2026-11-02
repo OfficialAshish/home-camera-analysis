@@ -490,30 +490,7 @@ class Analyzer:
         return n_saved
 
     def _event_clock(self, path, meta, start_dt, tsrc, s):
-        """Base datetime for one event (base + offset = clock time) and its source. When the video
-        time came from the DVR clock or is approximate, the clock at the event start is read again:
-        files stitched from several recordings jump in time, and a disagreement larger than
-        osd_event_tolerance means this event's own clock reading is the truth."""
-        cfg = self.cfg
-        if not cfg.osd_verify_events or "osd" not in cfg.time_sources or tsrc in ("override",) \
-                or tsrc.startswith("filename") or not self.ocr:
-            return start_dt, tsrc
-        f = V.read_frame_at(path, s + 0.1, 1280, (meta["width"], meta["height"]))
-        hint = start_dt.date() if (start_dt and T.is_exact(tsrc)) else \
-            (T.path_date_hint(path, cfg.input_dir) if cfg.use_path_date_hint else None)
-        d = T.read_clock(f, self.ocr, cfg.osd_date_order, hint)
-        if d is None or (hint and abs((d.date() - hint).days) > 1):
-            return start_dt, tsrc
-        zone = start_dt.tzinfo if start_dt else T.tz(cfg.timezone)
-        clock = d.replace(tzinfo=zone) + dt.timedelta(seconds=0.5)
-        if start_dt is not None and T.is_exact(tsrc):
-            diff = (clock - (start_dt + dt.timedelta(seconds=s + 0.1))).total_seconds()
-            if abs(diff) <= cfg.osd_event_tolerance:
-                return start_dt, tsrc
-            log.info("  clock at %s reads %s (%.0fs from the file start time) – using the event's own clock",
-                     V.fmt_offset(s), d, diff)
-        base = clock - dt.timedelta(seconds=s + 0.1)
-        return base.replace(microsecond=0), f"osd({self.ocr.name},event)"
+        return T.event_clock(path, meta, start_dt, tsrc, s, self.cfg, self.ocr)
 
     # --------------------------------------------------------- single event
     def analyze_event(self, path, meta, vid, rel, camera, start_dt, tsrc, ev, k, vdir, tamper) -> bool:

@@ -221,6 +221,7 @@ def remove_day(store, cfg, day: str) -> None:
     for f in (p, base + "_index.csv", base + "_timeline.srt"):
         if os.path.exists(f):
             os.remove(f)
+    _remove_legacy(cfg, day)
     store.db.execute("DELETE FROM reel_segments WHERE day=?", (day,))
 
 

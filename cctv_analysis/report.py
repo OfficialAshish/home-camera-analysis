@@ -10,6 +10,7 @@ import html
 import json
 import logging
 import os
+import re
 from collections import Counter, defaultdict
 
 import cv2
@@ -921,6 +922,24 @@ def _publish(tmp, final):
     return final
 
 
+_WEEK_FILE = re.compile(r"^\d{2}-(?:[A-Z][a-z]{2}-)?(?:\d{4}-)?\d{2}-[A-Z][a-z]{2}-\d{4}-W\d{2}(?:_\d{8}_\d{6})?\.xlsx$")
+
+
+def _remove_stale_weeks(cfg, current_labels) -> None:
+    """Weekly workbooks for weeks that no longer have events (e.g. after times were corrected)."""
+    root = os.path.join(cfg.output_dir, "reports")
+    if not os.path.isdir(root):
+        return
+    for year in os.listdir(root):
+        d = os.path.join(root, year)
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if _WEEK_FILE.match(f) and f.split("_")[0].replace(".xlsx", "") not in current_labels:
+                os.remove(os.path.join(d, f))
+                log.info("removed weekly report without events: %s", f)
+
+
 def build_weekly(store, cfg, new_days=None) -> list:
     days = sorted({r["d"] for r in store.query("SELECT DISTINCT substr(start_dt,1,10) d FROM events "
                                                "WHERE start_dt IS NOT NULL")})
@@ -938,6 +957,7 @@ def build_weekly(store, cfg, new_days=None) -> list:
         except ValueError:
             pass
     out = []
+    _remove_stale_weeks(cfg, {week_label(s, e, cfg.week_start) for s, e in weeks.items()})
     for s, e in sorted(weeks.items()):
         label = week_label(s, e, cfg.week_start)
         final = os.path.join(cfg.output_dir, "reports", str(s.year), label + ".xlsx")

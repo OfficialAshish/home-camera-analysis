@@ -157,3 +157,37 @@ def test_cancel_stops_cleanly_and_resumes(tmp_path):
     assert db.execute("SELECT COUNT(*) FROM videos WHERE status='error'").fetchone()[0] == 0
     stats2 = Analyzer(cfg).run(build_reports=False)                 # next run resumes the rest
     assert stats2["videos_ok"] == 2 and stats2["already_done"] == 1
+
+
+def test_retime_fixes_already_analysed_footage(tmp_path):
+    """Folders analysed before the fix carry download-day times; --retime corrects them in place."""
+    from cctv_analysis.retime import retime
+    inp = tmp_path / "in"
+    truth = make_cloud_clips.make(str(inp), 3)
+    old = _cfg(tmp_path, inp, time_sources=["filename", "metadata", "mtime"], use_path_date_hint=False)
+    Analyzer(old).run()
+    out = old.output_dir
+    db = sqlite3.connect(os.path.join(out, "analysis.db"))
+    before = db.execute("SELECT event_id, start_dt FROM events ORDER BY event_id").fetchall()
+    db.close()
+    assert all(s.startswith("2026-11-01") for _, s in before)                         # the broken state
+    assert os.path.exists(os.path.join(out, "highlights", "2026", "11-Nov", "2026-11-01_highlights.mp4"))
+    assert os.path.exists(os.path.join(out, "reports", "2026", "01-07-Nov-2026-W44.xlsx"))
+    stats = retime(_cfg(tmp_path, inp))
+    assert stats["videos_changed"] == 3 and stats["events_changed"] == 3
+    db = sqlite3.connect(os.path.join(out, "analysis.db"))
+    after = dict(db.execute("SELECT event_id, start_dt FROM events").fetchall())
+    srcs = {r[0] for r in db.execute("SELECT time_source FROM videos")}
+    tr = db.execute("SELECT COUNT(*) FROM detections WHERE dt LIKE '2026-11-01%'").fetchone()[0]
+    db.close()
+    assert set(after) == {e for e, _ in before}                                        # ids unchanged
+    got = sorted(after.values())
+    exp = sorted((dt.datetime.fromisoformat(t) + dt.timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S")
+                 for t in truth.values())                                              # events start 1 s in
+    assert all(abs((dt.datetime.fromisoformat(a) - dt.datetime.fromisoformat(b)).total_seconds()) <= 1
+               for a, b in zip(got, exp)), (got, exp)
+    assert all(s.startswith("osd(") for s in srcs) and tr == 0
+    assert not os.path.exists(os.path.join(out, "highlights", "2026", "11-Nov", "2026-11-01_highlights.mp4"))
+    assert os.path.exists(os.path.join(out, "highlights", "2026", "10-Oct", "2026-10-31_highlights.mp4"))
+    assert not os.path.exists(os.path.join(out, "reports", "2026", "01-07-Nov-2026-W44.xlsx"))
+    assert os.path.exists(os.path.join(out, "reports", "2026", "25-31-Oct-2026-W43.xlsx"))

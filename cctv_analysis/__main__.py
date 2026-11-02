@@ -14,6 +14,8 @@ def main():
     ap.add_argument("--config", default=None, help="JSON file with Config fields")
     ap.add_argument("--preset", choices=["fast", "balanced", "accurate"], help="speed preset (applied before overrides)")
     ap.add_argument("--reports-only", action="store_true", help="rebuild reports from the database")
+    ap.add_argument("--retime", action="store_true",
+                    help="re-read recording times of analysed videos, fix all timestamps, rebuild reels/reports")
     ap.add_argument("overrides", nargs="*", help="field=value (value parsed as JSON when possible)")
     a = ap.parse_args()
     from .config import PRESETS
@@ -34,6 +36,12 @@ def main():
     if a.work:
         d["work_dir"] = a.work
     cfg = Config.from_dict(d)
+    if a.retime:
+        from .pipeline import setup_logging
+        from .retime import retime
+        setup_logging(cfg.output_dir)
+        print(retime(cfg))
+        return
     if a.reports_only:
         from .pipeline import Analyzer
         from .report import build_reports

@@ -228,6 +228,17 @@ function addResultFolder(p) {
 $("res-out").addEventListener("change", (e) => { S.resOut = e.target.value; loadResults(); });
 $("res-browse").addEventListener("click", () => openBrowser(null, false, (p) => { addResultFolder(p); loadResults(); }));
 $("res-load").addEventListener("click", loadResults);
+$("res-retime").addEventListener("click", async (ev) => {
+  if (!S.resOut) { toast("Choose a results folder.", true); return; }
+  busy(ev.target, true);
+  try {
+    const r = await api("POST", "/api/retime", { out: S.resOut });
+    const j = await waitJob(r.job, x => { $("ev-count").textContent = `Fixing recording times… ${Math.round(x.progress.percent || 0)}%`; });
+    if (j.status !== "done") throw new Error(j.error || j.status);
+    toast(`Times re-read: ${j.result.videos_changed} video(s) and ${j.result.events_changed} event(s) corrected.`);
+    loadResults();
+  } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }
+});
 $("f-go").addEventListener("click", () => { S.offset = 0; loadEvents(); });
 $("ev-prev").addEventListener("click", () => { S.offset = Math.max(0, S.offset - S.limit); loadEvents(); });
 $("ev-next").addEventListener("click", () => { S.offset += S.limit; loadEvents(); });

@@ -269,3 +269,12 @@ def test_settings_never_return_the_api_key(env):
     assert "sk-secret-value" not in g.get_data(as_text=True)
     sp = os.path.join(env["app"].config["CCTV_DATA"], "secrets.json")
     assert oct(os.stat(sp).st_mode & 0o777) == "0o600"
+
+
+def test_retime_endpoint(analysed):
+    c, out = analysed["c"], str(analysed["out"])
+    r = c.post("/api/retime", json={"out": out}, headers=H())
+    assert r.status_code == 202
+    j = wait(c, r.get_json()["job"]["id"])
+    assert j["status"] == "done" and j["result"]["videos"] == 3 and j["result"]["videos_changed"] == 0
+    assert c.post("/api/retime", json={"out": str(analysed["tmp"])}, headers=H()).status_code == 404
