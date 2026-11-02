@@ -81,8 +81,8 @@ def load(store, start=None, end=None):
     w, a = _range_sql(start, end)
     events = store.query("SELECT * FROM events" + w + " ORDER BY COALESCE(start_dt, ''), camera, start_off", a)
     for e in events:
-        for k in ("flags", "semantic", "vlm", "snapshots", "objects", "identities"):
-            e[k] = _j(e[k], [] if k != "vlm" and k != "objects" else ({} if k == "objects" else None))
+        for k in ("flags", "semantic", "vlm", "snapshots", "objects", "identities", "plates", "crossings"):
+            e[k] = _j(e.get(k), [] if k not in ("vlm", "objects", "crossings") else (None if k == "vlm" else {}))
     videos = store.query("SELECT * FROM videos ORDER BY camera, start_dt, path")
     tracks = store.query("SELECT t.*, e.camera, e.video_path, e.rel_path, e.start_dt AS ev_dt FROM tracks t "
                          "JOIN events e USING(event_id)" + w.replace("start_dt", "e.start_dt") +
@@ -133,6 +133,8 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
     out = link_base or cfg.output_dir
     events, videos, tracks, faces, tamper = load(store, start, end)
     idt = identities_table(tracks)
+    from .reviews import load as load_reviews
+    reviews = load_reviews(cfg.output_dir)
     wb = xlsxwriter.Workbook(path, {"strings_to_urls": False, "nan_inf_to_errors": True})
     F = {
         "h": wb.add_format({"bold": True, "bg_color": "#1F3864", "font_color": "white", "text_wrap": True,
@@ -196,8 +198,13 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
                        "Put photos in the known-faces folder (one sub-folder per person) to label staff/owner."),
         ("Review columns", "'Review status' and 'Notes' are for you; they are kept only in this file."),
         ("Shop hours", hours_text(cfg) + f". Timezone {cfg.timezone}."),
-        ("Highlights", "The 'Highlights' sheet lists every movement inside each day's highlight reel: at which "
-                       "time of the reel it plays, the real clock time, and the original video + offset."),
+        ("Highlights", "highlights/<year>/<MM-Mon>/<date>_highlights.mp4 holds every movement of a day in time order, "
+                       "with the original picture (no added text). The 'Highlights' sheet (and <date>_index.csv / "
+                       "<date>_timeline.srt next to the video) map reel time → camera, clock time, video + offset."),
+        ("Recording time", "'Time source' says where each time came from: filename, osd(...) = the DVR clock read "
+                           "from the picture, metadata, or file-modified(approx). Approximate times are marked."),
+        ("Number plates", "The 'Number Plates' sheet lists every plate read, with confidence, the plate image and "
+                          "(when enhancement is on) the enhanced image. Check low-confidence reads by eye."),
         ("Weekly files", "reports/<year>/<dd-dd-Mon-yyyy-W##>.xlsx contain one week each; CCTV_Report.xlsx has "
                          "everything. Unique_Faces.xlsx lists every distinct face with NEW ones highlighted."),
     ]
@@ -217,6 +224,7 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
         "vlm_suspicious": "the vision-language model judged the event suspicious",
         "unknown_person_after_hours": "unrecognised face after hours", "repeat_visitor": "same unknown face in ≥ 5 events",
         "long_event": "event ≥ 5 min with people",
+        "watchlist_face": "a person from the face watchlist folder", "watchlist_plate": "a plate on the plate watchlist",
         "unauthorized_person": "person who is not a known face on an authorised-only camera"}
     for i, (k, v) in enumerate(WEIGHTS.items(), r0 + 1):
         ws.write(i, 0, k)
@@ -315,7 +323,7 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
             ("Best detection conf", 9), ("Flags / reasons", 60), ("AI description (VLM)", 60),
             ("Scene tag (SigLIP-2)", 34), ("Snapshot", 24), ("Snapshot file", 12), ("Contact sheet", 12),
             ("Clip", 8), ("Video (Drive)", 10), ("Event folder", 12), ("After hours", 7), ("Motion peak", 8),
-            ("Frames analysed", 8), ("Time source", 14), ("Review status", 14), ("Notes", 30)]
+            ("Frames analysed", 8), ("Time source", 14), ("Number plates", 16), ("Review status", 14), ("Notes", 30)]
     for c, (h, w) in enumerate(cols):
         ws.write(0, c, h, F["h"])
         ws.set_column(c, c, w)
@@ -351,7 +359,12 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
         ws.write(i, c + 6, "yes" if e["after_hours"] else "")
         ws.write(i, c + 7, e["motion_peak"])
         ws.write(i, c + 8, e["frames_analyzed"])
-        ws.write(i, c + 9, v.get("time_source", ""))
+        ws.write(i, c + 9, e.get("time_source") or v.get("time_source", ""))
+        ws.write(i, c + 10, ", ".join(e.get("plates") or []))
+        rv = reviews.get(e["event_id"])
+        if rv:
+            ws.write(i, c + 11, rv["status"])
+            ws.write(i, c + 12, rv["notes"] or "", F["wrap"])
         ws.set_row(i, 92)
     n = len(events)
     if n:
@@ -541,6 +554,62 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
         ws.autofilter(0, 0, len(segs), len(cols) - 1)
     ws.freeze_panes(1, 0)
 
+    # ---------------------------------------------------------- Number plates
+    ws = wb.add_worksheet("Number Plates")
+    cols = [("Plate", 14), ("Confidence", 9), ("Format OK", 8), ("Time", 19), ("Camera", 10), ("Vehicle", 9),
+            ("Event ID", 26), ("Video file", 34), ("Video offset", 10), ("Watchlist match", 14), ("Method", 16),
+            ("Reads", 6), ("Plate image", 22), ("Enhanced image", 22), ("Plate file", 8), ("Enhanced file", 8)]
+    for c, (h, w) in enumerate(cols):
+        ws.write(0, c, h, F["h"])
+        ws.set_column(c, c, w)
+    w_, a_ = _range_sql(start, end, "p.dt")
+    plates = store.query("SELECT p.*, e.rel_path FROM plates p JOIN events e USING(event_id)" + w_ +
+                         (" AND" if w_ else " WHERE") + " p.text != '' ORDER BY p.dt", a_)
+    for i, p_ in enumerate(plates, 1):
+        ws.write_row(i, 0, [p_["text"], p_["confidence"], "yes" if p_["valid_format"] else "no", p_["dt"] or "",
+                            p_["camera"], p_["vehicle"], p_["event_id"], p_["rel_path"], V.fmt_offset(p_["t_off"] or 0),
+                            p_["watchlist"] or "", p_["method"], p_["n_reads"]], F["top"])
+        image(ws, i, 12, p_["crop_path"], 150)
+        image(ws, i, 13, p_["enhanced_path"], 150)
+        link(ws, i, 14, _rel(p_["crop_path"], out), "plate" if p_["crop_path"] else "")
+        link(ws, i, 15, _rel(p_["enhanced_path"], out), "enhanced" if p_["enhanced_path"] else "")
+        ws.set_row(i, 48)
+    if plates:
+        ws.autofilter(0, 0, len(plates), len(cols) - 1)
+    else:
+        ws.write(1, 0, "No plates (enable 'Read vehicle number plates' / use_plates).")
+    ws.freeze_panes(1, 1)
+
+    # ---------------------------------------------------------- Footfall
+    ws = wb.add_worksheet("Footfall")
+    ws.write(0, 0, "Counting-line crossings per hour (the footfall count) and person tracks. A person can be split "
+                   "into several tracks (occlusion, low frame rate), so 'Person tracks' is an upper bound, not a head "
+                   "count – use counting lines (count_lines) for entrances.", F["b"])
+    hdr = ["Date", "Hour", "Camera", "Person tracks", "Events with people"]
+    lines = sorted({ln for e in events for ln in (e.get("crossings") or {})})
+    for ln in lines:
+        hdr += [f"{ln} in", f"{ln} out"]
+    for c, h in enumerate(hdr):
+        ws.write(1, c, h, F["h"])
+    ff = defaultdict(lambda: {"people": 0, "events": 0, "lines": defaultdict(lambda: [0, 0])})
+    for t in tracks:
+        if t["cls"] == "person" and t["first_dt"]:
+            ff[(t["first_dt"][:10], t["first_dt"][11:13], t["camera"])]["people"] += 1
+    for e in events:
+        if e["start_dt"]:
+            k = (e["start_dt"][:10], e["start_dt"][11:13], e["camera"])
+            ff[k]["events"] += bool(e["n_person_tracks"])
+            for ln, c_ in (e.get("crossings") or {}).items():
+                ff[k]["lines"][ln][0] += c_.get("in", 0)
+                ff[k]["lines"][ln][1] += c_.get("out", 0)
+    for i, (k, v) in enumerate(sorted(ff.items()), 2):
+        row = [k[0], f"{k[1]}:00", k[2], v["people"], v["events"]]
+        for ln in lines:
+            row += v["lines"][ln]
+        ws.write_row(i, 0, row)
+    ws.set_column(0, 2, 12)
+    ws.freeze_panes(2, 0)
+
     # ---------------------------------------------------------- Config
     ws = wb.add_worksheet("Config")
     ws.set_column(0, 0, 28)
@@ -598,6 +667,8 @@ def build_html(store, cfg, path, max_embedded=1500, run_id=""):
             links.append(f'<a href="{E(_rel(e["clip_path"], out))}" target="_blank">clip</a>')
         links.append(f'<a href="{E(_rel(e["folder"], out))}" target="_blank">folder</a>')
         objs = ", ".join(f"{k}×{n}" for k, n in (e["objects"] or {}).items())
+        if e.get("plates"):
+            objs += " · plates " + ", ".join(e["plates"])
         ids_ = e["identities"] or []
         idhtml = " ".join(f'<span class="pid{" new" if i in new_ids else ""}">{E(i)}{" NEW" if i in new_ids else ""}</span>'
                           for i in ids_)
@@ -680,7 +751,7 @@ Search <input id="q" placeholder="bag, theft, running…"> Sort <select id="sort
 <span id="cnt"></span></div>
 <div class="grid" id="grid">{''.join(cards)}</div></div>
 <div id="fa" class="tab"><div class="pad">Yellow = face first seen in the latest run. Full list with first/last seen: <b>Unique_Faces.xlsx</b>.</div><div class="ids">{''.join(idcards)}</div></div>
-<div id="hl" class="tab"><div class="pad">One reel per day with every movement from all cameras (running clock + source burned in).</div>{''.join(hlhtml) or '<div class="pad">no reels yet</div>'}</div>
+<div id="hl" class="tab"><div class="pad">One video per day with every movement from all cameras, in time order (highlights/YYYY/MM-Mon/). The table maps reel time to camera and clock time.</div>{''.join(hlhtml) or '<div class="pad">no reels yet</div>'}</div>
 <div id="vi" class="tab"><div class="pad"><table><tr><th>Video</th><th>Camera</th><th>Start</th><th>Duration</th><th>Events</th><th>Status</th></tr>{vrows}</table></div></div>
 <script>
 const g=document.getElementById('grid'),cards=[...g.children],$=i=>document.getElementById(i);
