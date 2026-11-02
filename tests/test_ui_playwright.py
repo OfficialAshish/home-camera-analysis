@@ -125,9 +125,9 @@ def test_full_user_flow(server):
         for lv in ("LOW", "NORMAL"):
             page.check(f".f-lv[value={lv}]")
         page.click("#f-go")
-        expect(page.locator("#ev-count")).to_contain_text("event(s)")
-        cards = page.locator("#ev-list .ev")
-        assert cards.count() >= 3
+        # wait for the result of THIS query (all levels: 3 events), not the earlier HIGH/REVIEW one
+        expect(page.locator("#ev-count")).to_contain_text("of 3 event(s)")
+        expect(page.locator("#ev-list .ev")).to_have_count(3)
         page.locator("#ev-list .ev", has_text="MH12AB1234").first.click()
         expect(page.locator("#ev-detail .plate-text").first).to_have_text("MH12AB1234")
         expect(page.locator("#ev-detail")).to_contain_text("watchlist_plate")
