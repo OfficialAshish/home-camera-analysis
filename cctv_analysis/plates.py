@@ -252,16 +252,29 @@ class Enhancer:
         exact reads vs 0/12 with the plate reader alone on H.264-like compressed blurred video)."""
         up = cv2.resize(crop, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
         cands = []
-        for L in self.LENGTHS:
-            psf = motion_psf(L, angle)
-            for k in self.NOISE:
-                img = wiener_deconvolve(up, psf, k)
-                if inner is not None:
-                    x1, y1, x2, y2 = (2 * v for v in inner)
-                    img = img[y1:y2, x1:x2]
-                txt, c = reader.read(img)
-                if txt:
-                    cands.append((self.score(txt, c), txt, c, img))
+        tried = set()
+
+        def attempt(L, k):
+            if (L, k) in tried or L < self.LENGTHS[0] or L > self.LENGTHS[-1]:
+                return
+            tried.add((L, k))
+            img = wiener_deconvolve(up, motion_psf(L, angle), k)
+            if inner is not None:
+                x1, y1, x2, y2 = (2 * v for v in inner)
+                img = img[y1:y2, x1:x2]
+            txt, c = reader.read(img)
+            if txt:
+                cands.append((self.score(txt, c), txt, c, img, L))
+
+        # coarse pass over blur lengths, then every length/noise level around the two best
+        for L in self.LENGTHS[::3]:
+            attempt(L, self.NOISE[1])
+        top = sorted({c[4] for c in sorted(cands, key=lambda r: -r[0])[:2]})
+        for L0 in top:
+            for L in range(L0 - 2, L0 + 3):
+                for k in self.NOISE:
+                    attempt(L, k)
+        cands = [c[:4] for c in cands]
         if not cands:
             return None
         cands.sort(key=lambda r: -r[0])
@@ -448,6 +461,11 @@ class PlateReader:
         context = (frame[ky1:ky2, kx1:kx2].copy(), (fx1 - kx1, fy1 - ky1, fx2 - kx1, fy2 - ky1))
         return crop, [x1 + bx1, y1 + by1, x1 + bx2, y1 + by2], conf, context
 
+    def _settled(self, reads) -> bool:
+        """Three confident, format-perfect, identical reads: more deblurring cannot change the vote."""
+        good = [r[0] for r in reads if r[1] >= 0.7 and plate_fit(r[0], self.cfg.plate_region)[1] == 1.0]
+        return any(good.count(t) >= 3 for t in set(good))
+
     def read_track(self, samples: List[tuple]) -> Optional[dict]:
         """samples: (t_offset, full-res frame, vehicle box in that frame[, motion angle in radians]).
         Returns the fused result (or None when no plate was found in any sample)."""
@@ -465,7 +483,7 @@ class PlateReader:
             txt, c = self.reader.read(crop)
             if txt:
                 reads.append((txt, c, "frame", t))
-            if self.enhancer is not None and self.enhancer.score(txt, c) < 0.9:
+            if self.enhancer is not None and self.enhancer.score(txt, c) < 0.9 and not self._settled(reads):
                 r = self.enhancer.best_read(context, self.reader, angle, inner, self.second)
                 if r:
                     reads.append((r[0], r[1], "deblur", t))

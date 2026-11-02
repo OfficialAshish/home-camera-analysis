@@ -90,10 +90,11 @@ def verify(key_text: str, public_key_pem: Optional[bytes] = None, today: Optiona
         return LicenseStatus(False, "NOT_CONFIGURED", f"licence public key unreadable: {e}")
     if pub is None:
         return LicenseStatus(False, "NOT_CONFIGURED",
-                             f"no licence public key at {PUBLIC_KEY_PATH} (vendor: run tools/license_tool.py init)")
+                             f"Trial mode (up to {TRIAL_MAX_VIDEOS} videos per job): this copy has no licence "
+                             f"verification key yet – vendor: run tools/license_tool.py init")
     key_text = (key_text or "").strip()
     if not key_text:
-        return LicenseStatus(False, "TRIAL", f"no licence installed – trial mode (up to {TRIAL_MAX_VIDEOS} videos per job)")
+        return LicenseStatus(False, "TRIAL", f"Trial mode (up to {TRIAL_MAX_VIDEOS} videos per job): no licence installed")
     parts = key_text.split(".")
     if len(parts) != 3 or parts[0] != PREFIX:
         return LicenseStatus(False, "INVALID", "not a licence key")
