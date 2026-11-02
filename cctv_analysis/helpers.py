@@ -12,7 +12,9 @@ import cv2
 import numpy as np
 
 from . import annotate as A
+from . import timeline as T
 from . import video_io as V
+from .ocr import get_ocr
 from .config import Config
 from .motion import detect_osd_mask, poly_mask
 from .rules import zones_for
@@ -63,7 +65,7 @@ def preview_cameras(cfg: Config, per_camera: int = 1, width: int = 960):
         for p in ps[:per_camera]:
             meta = V.probe(p)
             tot += meta["duration"]
-            st, src = V.infer_start_time(p, meta, cfg)
+            st, src = T.resolve_start_time(p, meta, cfg, get_ocr(cfg.ocr_engine))
             print(f"  {os.path.relpath(p, cfg.input_dir)} | {meta['width']}x{meta['height']} {meta['fps']:.1f}fps "
                   f"{V.fmt_offset(meta['duration'])} {meta['codec']} | start {st} ({src})")
             f = V.read_frame_at(p, min(5.0, meta["duration"] / 2), width, (meta["width"], meta["height"]))

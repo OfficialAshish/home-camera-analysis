@@ -3,6 +3,7 @@ only needs `input_dir` and `output_dir`."""
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field, fields
 from typing import Dict, List, Optional
 
@@ -76,9 +77,16 @@ class Config:
 
     # ------------------------------------------------------------ time info
     timezone: str = "Asia/Kolkata"
-    # Order in which the recording start time is resolved.
+    # Order in which the recording start time is resolved (see timeline.py):
+    # filename | osd (burnt-in DVR clock read by OCR) | metadata (container creation_time) | mtime (approx)
     time_sources: List[str] = field(
-        default_factory=lambda: ["filename", "metadata", "vlm_osd", "mtime"])
+        default_factory=lambda: ["filename", "osd", "metadata", "mtime"])
+    ocr_engine: str = "auto"                     # auto | rapidocr | tesseract | vlm | none  (reads the DVR clock)
+    osd_date_order: str = "auto"                 # auto | ymd | dmy | mdy  (how the DVR prints dates)
+    osd_samples: int = 3                         # clock readings per video that must agree
+    osd_verify_events: bool = True               # re-read the clock at every event start (fixes gaps inside a file)
+    osd_event_tolerance: float = 5.0             # seconds; a larger disagreement uses the event's own clock reading
+    use_path_date_hint: bool = True              # a date in the folder/file name ('31Oct26') validates/fixes times
     # Extra regexes with named groups Y m d H M S (optional) tried before built-ins.
     filename_time_patterns: List[str] = field(default_factory=list)
     # Manual overrides: {"file name or relative path": "2026-10-11 09:30:00"}
@@ -133,13 +141,32 @@ class Config:
     require_person_for_event: bool = False       # drop motion with no person/vehicle/animal
 
     # ----------------------------------------------------------------- faces
-    use_faces: bool = True
+    use_faces: bool = True                       # detect + save face crops
+    face_identities: bool = True                 # group faces into persistent identities (unique faces, P0001…)
+    face_watchlist_dir: str = ""                 # folder/<Name>/*.jpg – people who raise a "watchlist_face" alert
     face_score_threshold: float = 0.75
     face_min_size: int = 20                      # px, in detection-resolution frame
     face_match_threshold: float = 0.42           # SFace cosine similarity
     known_face_threshold: float = 0.45
     faces_per_track: int = 3
     face_min_quality: float = 0.30               # below this a face is kept as evidence but not used for identity
+
+    # --------------------------------------------------- number plates (ANPR)
+    use_plates: bool = False                     # read vehicle number plates (slower; off by default)
+    plate_enhance: bool = False                  # super-resolve / sharpen / multi-frame vote hard plates (slowest)
+    plate_vlm_read: bool = False                 # ask the VLM when OCR cannot read a plate
+    plate_detector: str = "auto"                 # auto | yolo-plate (open-image-models ONNX) | classic (OpenCV)
+    plate_ocr: str = "auto"                      # auto | fast-plate-ocr | generic (ocr_engine)
+    plate_region: str = "IN"                     # IN (Indian formats, incl. BH series) | any
+    plate_min_vehicle_px: int = 48               # skip vehicles smaller than this (box height, detection frame)
+    plate_reads_per_track: int = 6               # plate crops read per vehicle track
+    plate_watchlist: List[str] = field(default_factory=list)   # plates that raise a "watchlist_plate" alert
+    plate_watchlist_max_edits: int = 1           # tolerated OCR differences when matching the watchlist
+
+    # ------------------------------------------------------ footfall counting
+    # Virtual counting lines per camera, normalised coords: {"*": {"entrance": [[0.1,0.6],[0.9,0.6]]}}
+    # People crossing a line are counted in (left→right of the line direction) / out.
+    count_lines: Dict[str, Dict[str, List[List[float]]]] = field(default_factory=dict)
 
     # ------------------------------------------------- suspicious heuristics
     loiter_seconds: float = 90.0
@@ -156,8 +183,12 @@ class Config:
     normal_prompts: List[str] = field(default_factory=lambda: list(DEFAULT_NORMAL_PROMPTS))
     semantic_alert_score: float = 0.10           # SigLIP sigmoid; also needs lift >= 0.6
 
-    use_vlm: bool = True
-    vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct"
+    use_vlm: bool = True                         # AI text description of events (slow on CPU)
+    vlm_provider: str = "transformers"           # transformers (local HF model) | openai (any OpenAI-compatible server)
+    vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct" # HF repo id, or the model name the server knows (e.g. "qwen3-vl:2b")
+    vlm_base_url: str = ""                       # openai provider: e.g. http://127.0.0.1:11434/v1 (Ollama), :1234/v1 (LM Studio)
+    vlm_api_key_env: str = "CCTV_VLM_API_KEY"    # name of the environment variable holding the API key (never stored)
+    vlm_timeout: float = 120.0                   # seconds per request (openai provider)
     vlm_scope: str = "flagged"                   # flagged | people | all
     vlm_max_events: int = 300
     vlm_prompt: str = DEFAULT_VLM_PROMPT
@@ -171,6 +202,7 @@ class Config:
     clip_scope: str = "people"                   # all | people | flagged
     clip_max_seconds: float = 180.0
     clip_width: int = 960
+    clip_overlay: bool = False                   # burn an event label into clips (off = untouched picture)
     excel_thumbnails: bool = True
     excel_max_thumbnails: int = 3000
     make_html: bool = True
@@ -180,9 +212,44 @@ class Config:
     make_highlight_reel: bool = True             # one reel per day with every movement of all cameras
     reel_scope: str = "all"                      # all | people | flagged
     reel_max_event_seconds: float = 0            # 0 = whole event; else cap each event's part of the reel
-    reel_width: int = 960
+    reel_overlay: bool = False                   # burn clock/camera text into reels (off = original picture only)
+    reel_skip_blank: bool = True                 # leave black/blank, nothing-detected motion out of reels
+    reel_width: int = 1280
     reel_fps: int = 15
     drive_links: bool = True                     # resolve Google Drive file links in Colab
+
+    def validate(self) -> List[str]:
+        """Human-readable problems with this configuration (empty list = valid)."""
+        from .ocr import ENGINES
+        from .timeline import TIME_SOURCES
+        p = []
+        bad = [s for s in self.time_sources if s not in TIME_SOURCES]
+        if bad:
+            p.append(f"time_sources: unknown {bad}; valid: {list(TIME_SOURCES)}")
+        choices = {"ocr_engine": ENGINES, "osd_date_order": ("auto", "ymd", "dmy", "mdy"),
+                   "vlm_provider": ("transformers", "openai"), "vlm_scope": ("flagged", "people", "all"),
+                   "clip_scope": ("all", "people", "flagged"), "reel_scope": ("all", "people", "flagged"),
+                   "plate_detector": ("auto", "yolo-plate", "classic"),
+                   "plate_ocr": ("auto", "fast-plate-ocr", "generic"), "plate_region": ("IN", "any"),
+                   "week_start": ("sunday", "monday"), "camera_name_source": ("auto", "folder", "filename", "none"),
+                   "hw_decode": ("auto", "cuda", "none")}
+        for k, ok in choices.items():
+            if getattr(self, k) not in ok:
+                p.append(f"{k}: {getattr(self, k)!r} is not one of {list(ok)}")
+        if self.use_vlm and self.vlm_provider == "openai" and not self.vlm_base_url.strip():
+            p.append("vlm_base_url: NOT_CONFIGURED – required when vlm_provider='openai' (e.g. http://127.0.0.1:11434/v1)")
+        for k in ("open_hour", "close_hour"):
+            v = (getattr(self, k) or "").strip()
+            if v and not re.fullmatch(r"([01]?\d|2[0-3]):[0-5]\d", v):
+                p.append(f"{k}: {v!r} must look like 09:00")
+        if bool((self.open_hour or "").strip()) != bool((self.close_hour or "").strip()):
+            p.append("open_hour/close_hour: set both or neither")
+        for k in ("motion_fps", "detect_fps", "reel_fps"):
+            if not getattr(self, k) or getattr(self, k) <= 0:
+                p.append(f"{k}: must be > 0")
+        if not 0 <= self.motion_sensitivity <= 1:
+            p.append("motion_sensitivity: must be between 0 and 1")
+        return p
 
     @classmethod
     def from_dict(cls, d: dict) -> "Config":

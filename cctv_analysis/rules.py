@@ -8,6 +8,8 @@ from typing import Dict, List, Optional
 import numpy as np
 
 WEIGHTS = {
+    "watchlist_face": 50,
+    "watchlist_plate": 50,
     "after_hours": 30,
     "camera_tamper": 45,
     "unauthorized_person": 35,
@@ -45,6 +47,40 @@ def zones_for(cfg, camera: str) -> Dict[str, list]:
     z = dict(cfg.zones.get("*", {}))
     z.update(cfg.zones.get(camera, {}))
     return z
+
+
+def lines_for(cfg, camera: str) -> Dict[str, list]:
+    z = dict(cfg.count_lines.get("*", {}))
+    z.update(cfg.count_lines.get(camera, {}))
+    return z
+
+
+def _side(p, a, b) -> float:
+    return (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+
+
+def _segments_cross(p, q, a, b) -> bool:
+    d1, d2 = _side(p, a, b), _side(q, a, b)
+    d3, d4 = _side(a, p, q), _side(b, p, q)
+    return d1 * d2 < 0 and d3 * d4 < 0
+
+
+def count_crossings(points, lines: Dict[str, list]) -> Dict[str, Dict[str, int]]:
+    """Counting lines crossed by a trajectory of (x, y) points (normalised, foot position).
+    'in' = from the right-hand side of the line a→b to its left-hand side (image coordinates,
+    y down: for a line drawn left→right, 'in' means moving upwards/away from the camera)."""
+    out = {}
+    for name, (a, b) in lines.items():
+        n_in = n_out = 0
+        for p, q in zip(points, points[1:]):
+            if _segments_cross(p, q, a, b):
+                if _side(p, a, b) > 0:
+                    n_in += 1
+                else:
+                    n_out += 1
+        if n_in or n_out:
+            out[name] = {"in": n_in, "out": n_out}
+    return out
 
 
 def _hm(s: str) -> dt.time:
@@ -96,6 +132,12 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
         if tp["start"] <= ev["end"] and tp["end"] >= ev["start"]:
             add("camera_tamper", f"{tp['kind']} for {tp['end'] - tp['start']:.0f}s")
             break
+    wl = sorted({t["watchlist"] for t in persons if t.get("watchlist")})
+    if wl:
+        add("watchlist_face", "person on the face watchlist: " + ", ".join(wl))
+    wp = [p for p in ev.get("plates") or [] if p.get("watchlist")]
+    if wp:
+        add("watchlist_plate", "watchlist plate: " + ", ".join(f"{p['text']} (≈{p['watchlist']})" for p in wp))
     weapons = sorted({t["cls"] for t in tracks if t["cls"] in cfg.weapon_classes and t["max_conf"] >= 0.4})
     if weapons:
         add("weapon_like_object", "detected: " + ", ".join(weapons))
@@ -142,7 +184,7 @@ def score_event(ev: dict, tracks: List[dict], cfg, vlm: Optional[dict] = None,
     staff_only = persons and all(t.get("known_name") for t in persons if t.get("identity"))
     score = sum(f["points"] for f in flags)
     if staff_only and any(t.get("identity") for t in persons) and not weapons and \
-            not any(f["flag"] == "unauthorized_person" for f in flags):
+            not any(f["flag"] in ("unauthorized_person", "watchlist_face", "watchlist_plate") for f in flags):
         score *= 0.5
         flags.append({"flag": "known_people_only", "points": 0, "reason": "only known/staff faces – score halved"})
     return float(min(100.0, score)), flags

@@ -2,7 +2,6 @@
 fallback), recording-time inference, clip export and Google-Drive links."""
 from __future__ import annotations
 
-import datetime as dt
 import fnmatch
 import json
 import os
@@ -14,11 +13,6 @@ from typing import Iterator, List, Optional, Tuple
 
 import cv2
 import numpy as np
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:  # pragma: no cover
-    ZoneInfo = None
 
 FFMPEG = shutil.which("ffmpeg")
 FFPROBE = shutil.which("ffprobe")
@@ -43,6 +37,11 @@ def _hw_args() -> List[str]:
 
 _MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
+
+
+def natural_key(s: str):
+    """'clip2' < 'clip10' (numbers compared as numbers)."""
+    return [int(x) if x.isdigit() else x.lower() for x in re.split(r"(\d+)", s)]
 
 
 def _norm(t: str) -> str:
@@ -95,8 +94,8 @@ def find_videos(cfg) -> List[str]:
     out_abs = os.path.abspath(cfg.output_dir)
     seen_dirs = set()
     for root, dirs, files in os.walk(cfg.input_dir):
-        dirs[:] = sorted(d for d in dirs if os.path.abspath(os.path.join(root, d)) != out_abs
-                         and not d.startswith("."))
+        dirs[:] = sorted((d for d in dirs if os.path.abspath(os.path.join(root, d)) != out_abs
+                         and not d.startswith(".")), key=natural_key)
         rel_parts = [] if os.path.abspath(root) == os.path.abspath(cfg.input_dir) else \
             os.path.relpath(root, cfg.input_dir).split(os.sep)
         if rel_parts:
@@ -105,7 +104,7 @@ def find_videos(cfg) -> List[str]:
             if not cfg.recursive:
                 break
             continue
-        for f in sorted(files):
+        for f in sorted(files, key=natural_key):
             if os.path.splitext(f)[1].lower() not in exts:
                 continue
             p = os.path.join(root, f)
@@ -325,95 +324,17 @@ def read_frame_at(path: str, t: float, width: int = 0, src_size=(0, 0)) -> Optio
         return f.copy()
     return None
 
-# ------------------------------------------------------------ time inference
-
-_BUILTIN_PATTERNS = [
-    # 20261011143000, 2026-10-11_14-30-00, 2026.10.11 14.30.00, 20261011T143000
-    r"(?P<Y>20\d{2})[-_.]?(?P<m>[01]\d)[-_.]?(?P<d>[0-3]\d)[-_ T.]?(?P<H>[0-2]\d)[-_.:hH]?(?P<M>[0-5]\d)[-_.:mM]?(?P<S>[0-5]\d)",
-    # 11-10-2026_14-30-00 (day first)
-    r"(?P<d>[0-3]\d)[-_.](?P<m>[01]\d)[-_.](?P<Y>20\d{2})[-_ T.]?(?P<H>[0-2]\d)[-_.:]?(?P<M>[0-5]\d)[-_.:]?(?P<S>[0-5]\d)",
-    # date only + hour-minute
-    r"(?P<Y>20\d{2})[-_.]?(?P<m>[01]\d)[-_.]?(?P<d>[0-3]\d)[-_ T.]?(?P<H>[0-2]\d)[-_.:]?(?P<M>[0-5]\d)(?!\d)",
-]
-_DATE_ONLY = r"(?P<Y>20\d{2})[-_.]?(?P<m>[01]\d)[-_.]?(?P<d>[0-3]\d)(?!\d)"
-_TIME_ONLY = r"(?<!\d)(?P<H>[0-2]\d)[.:_-](?P<M>[0-5]\d)[.:_-](?P<S>[0-5]\d)"   # Dahua 14.30.00-14.45.00
-
-
-def _tz(name: str):
-    if ZoneInfo is None:
-        return dt.timezone.utc
-    try:
-        return ZoneInfo(name)
-    except Exception:
-        return dt.timezone.utc
-
-
-def _mk(g: dict, tz) -> Optional[dt.datetime]:
-    try:
-        d = dt.datetime(int(g["Y"]), int(g["m"]), int(g["d"]), int(g.get("H") or 0),
-                        int(g.get("M") or 0), int(g.get("S") or 0), tzinfo=tz)
-        if 2000 <= d.year <= 2100:
-            return d
-    except (ValueError, TypeError, KeyError):
-        pass
-    return None
-
-
-def time_from_name(path: str, root: str, patterns: List[str], tz) -> Optional[dt.datetime]:
-    name = os.path.basename(path)
-    rel = os.path.relpath(path, root) if root and os.path.isdir(root) else path
-    for pat in list(patterns) + _BUILTIN_PATTERNS:
-        for text in (name, rel):
-            m = re.search(pat, text)
-            if m:
-                d = _mk(m.groupdict(), tz)
-                if d:
-                    return d
-    # date somewhere in path + time in file name (Dahua / many NVR exports)
-    md = re.search(_DATE_ONLY, rel)
-    mt = re.search(_TIME_ONLY, name)
-    if md and mt:
-        return _mk({**md.groupdict(), **mt.groupdict()}, tz)
-    return None
-
-
-def infer_start_time(path: str, meta: dict, cfg, vlm_reader=None) -> Tuple[Optional[dt.datetime], str]:
-    """Return (aware datetime of first frame, source label)."""
-    tz = _tz(cfg.timezone)
-    base = os.path.basename(path)
-    rel = os.path.relpath(path, cfg.input_dir) if os.path.isdir(cfg.input_dir) else base
-    for key in (rel, base):
-        if key in cfg.time_overrides:
-            return dt.datetime.fromisoformat(cfg.time_overrides[key]).replace(tzinfo=tz), "override"
-    for src in cfg.time_sources:
-        if src == "filename":
-            d = time_from_name(path, cfg.input_dir, cfg.filename_time_patterns, tz)
-            if d:
-                return d, "filename"
-        elif src == "metadata" and meta.get("creation_time"):
-            try:
-                d = dt.datetime.fromisoformat(meta["creation_time"].replace("Z", "+00:00"))
-                if d.tzinfo is None:
-                    d = d.replace(tzinfo=dt.timezone.utc)
-                if 2000 <= d.year <= 2100 and d.year != 1970:
-                    return d.astimezone(tz), "metadata"
-            except Exception:
-                pass
-        elif src == "vlm_osd" and vlm_reader is not None:
-            try:
-                d = vlm_reader(path, meta)
-                if d:
-                    return d.replace(tzinfo=tz) if d.tzinfo is None else d, "osd(vlm)"
-            except Exception:
-                pass
-        elif src == "mtime":
-            st = os.stat(path)
-            d = dt.datetime.fromtimestamp(st.st_mtime, tz) - dt.timedelta(seconds=meta.get("duration") or 0)
-            return d, "file-modified(approx)"
-    return None, "unknown"
+def _device_serial(base: str) -> str:
+    """Camera serial prefix of cloud exports, e.g. 'G225087WSFW' in 'G225087WSFW-cloud-18056409.mp4'."""
+    m = re.match(r"([A-Z0-9]{8,20})[-_]", base)
+    if m and re.search(r"[A-Z]", m.group(1)) and re.search(r"\d", m.group(1)):
+        return m.group(1)
+    return ""
 
 
 def camera_name(path: str, cfg) -> str:
+    """Camera label: 'ch01'-style token in the file name, else the first sub-folder (unless that
+    folder is a date such as '31Oct26New' or '2026-10-11'), else a device serial prefix, else 'cam'."""
     if cfg.camera_name_source == "none":
         return ""
     base = os.path.basename(path)
@@ -425,8 +346,12 @@ def camera_name(path: str, cfg) -> str:
         if os.path.abspath(parent) != os.path.abspath(cfg.input_dir):
             rel = os.path.relpath(parent, cfg.input_dir)
             first = rel.split(os.sep)[0]
-            if first and first != ".." and not re.fullmatch(r"[\d\-_.]+", first):
+            if first and first != ".." and not re.fullmatch(r"[\d\-_.]+", first) and not day_month(first):
                 return first
+    if cfg.camera_name_source in ("auto", "filename"):
+        serial = _device_serial(base)
+        if serial:
+            return serial
     return "cam"
 
 # ---------------------------------------------------------------- clip export
