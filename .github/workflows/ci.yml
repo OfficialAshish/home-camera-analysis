@@ -26,6 +26,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,7 +47,18 @@ jobs:
           python --version; ffmpeg -hide_banner -version | head -1
           env | grep -E '^(NODE_ENV|CCTV_|HF_|PYTHONPATH)=' || true
       - name: Tests (unit, pipeline e2e, app API, browser UI, plates, VLM providers)
-        run: python -m pytest -q -p no:cacheprovider
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:cacheprovider -rfE 2>&1 | tee pytest.log
+      - name: Post the failure summary on the pull request
+        if: failure() && github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "### CI test failure at ${GITHUB_SHA::7}"; echo '```'; grep -E "^(FAILED|ERROR)|^E  " pytest.log | head -60; echo; tail -n 25 pytest.log; echo '```'; } > summary.md
+          gh pr comment "${GITHUB_REF_NAME}" --body-file summary.md || echo "no open pull request for this branch"
       - name: Packaged-app self test (source install)
         run: python -m cctv_analysis.app --self-test
 

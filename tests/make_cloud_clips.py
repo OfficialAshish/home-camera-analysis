@@ -21,11 +21,12 @@ import cv2
 import numpy as np
 
 # (cloud sequence number, recording start) – mirrors the screenshots: 05:38:27, 20:38:34, 22:00:46 ...
+# One clip's name sorts out of time order, so name order and time order cannot be confused in tests.
 CLIPS = [
     (18056409, dt.datetime(2026, 10, 31, 5, 38, 27)),
     (18060945, dt.datetime(2026, 10, 31, 20, 38, 34)),
     (18061426, dt.datetime(2026, 10, 31, 22, 0, 46)),
-    (18050112, dt.datetime(2026, 10, 31, 1, 12, 5)),
+    (18069999, dt.datetime(2026, 10, 31, 1, 12, 5)),     # name sorts last, recorded first
     (18058870, dt.datetime(2026, 10, 31, 13, 47, 50)),
 ]
 # download (mtime) order deliberately scrambled relative to recording order
