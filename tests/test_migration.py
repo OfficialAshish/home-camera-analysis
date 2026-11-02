@@ -1,6 +1,5 @@
 """A results folder written by the original version (schema of commit bbc2e0b) must open,
 migrate and work with the current code: app queries, reports, highlight index."""
-import json
 import os
 import sqlite3
 import sys
