@@ -8,8 +8,9 @@ name; their `creation_time` and file mtime are the **download** time (next day, 
 The old order `filename → metadata → vlm_osd → mtime` gave every clip ≈ the same bogus time, so
 daily reels were in download order (the reported 05:38 → 22:00 → 20:38 jumps).
 *Decision.* `filename → osd → metadata → mtime` (`timeline.py`). The burnt-in clock is read by OCR
-(RapidOCR, Tesseract or the VLM) at 3–4 offsets; two early readings define the start, later ones
-confirm it or flag a discontinuity. A date in the folder/file name (`31Oct26`) must match an OSD
+(RapidOCR, Tesseract or the VLM) at 0.5 s, 1.5 s, the middle and the end; agreeing readings are
+grouped, the biggest group wins and ties go to the group with the earliest reading (a stitched file
+starts at its first frame); more than one group flags a discontinuity. A date in the folder/file name (`31Oct26`) must match an OSD
 reading (±1 day) and must match metadata **exactly** (exports are often stamped the next day).
 *Consequence.* ~4 OCR reads per untimed file (≈0.3 s each on CPU). `vlm_osd` was removed; configs
 that still list it fail validation with a clear message.

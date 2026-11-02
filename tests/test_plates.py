@@ -97,3 +97,13 @@ def test_motion_blurred_plate_needs_enhancement(tmp_path):
     enh, _ = _run(tmp_path / "b", {"blur": 9, "scale": 1.2}, use_plates=True, plate_enhance=True)
     assert enh and enh[0][0] == "MH12AB1234" and enh[0][2] == 1 and "deblur" in enh[0][3]
     assert enh[0][5] and os.path.exists(enh[0][5])                          # enhanced image saved for a human
+
+
+def test_bounded_edit_distance_matches_reference():
+    import random
+    r = random.Random(3)
+    for _ in range(5000):
+        a = "".join(r.choice("MH12AB") for _ in range(r.randint(6, 10)))
+        b = "".join(r.choice("MH12AB") for _ in range(r.randint(6, 10)))
+        for k in (0, 1, 2):
+            assert P.within_edits(a, b, k) == (P.edit_distance(a, b) <= k), (a, b, k)

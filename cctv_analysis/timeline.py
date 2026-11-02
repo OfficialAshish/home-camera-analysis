@@ -260,10 +260,10 @@ def osd_start_time(path: str, meta: dict, ocr, order: str = "auto", hint: Option
                    samples: int = 3) -> Tuple[Optional[dt.datetime], str]:
     """Video start from the burnt-in clock; start = clock(t) - t.
 
-    Two readings near the start define it when they agree (a file stitched from several
-    recordings must still start at its first frame); readings later in the file confirm it
-    ('consensus') or reveal a jump ('discontinuous' - events then use their own clock reading).
-    When the early readings disagree (a misread), the most supported value wins.
+    Readings at 0.5 s and 1.5 s near the start, the middle and the end are grouped by agreement;
+    the biggest group wins and ties go to the group with the earliest reading, so a file stitched
+    from several recordings still starts at its first frame. One group = 'consensus'; several =
+    'discontinuous' (events then use their own clock reading).
     Returns (naive start, detail) - detail is 'consensus', 'single', 'discontinuous' or a reason."""
     dur = float(meta.get("duration") or 0)
     if not ocr or dur <= 0:
@@ -290,11 +290,8 @@ def osd_start_time(path: str, meta: dict, ocr, order: str = "auto", hint: Option
     def close(a, b):
         return abs((a - b).total_seconds()) <= 2.5
 
-    early = [r for r in reads if r[0] <= 2.0]
-    if len(early) >= 2 and close(early[0][1], early[1][1]):
-        start = early[0][1]
-        later = [r for r in reads if r[0] > 2.0]
-        return _round(start), "consensus" if all(close(start, s) for _, s in later) else "discontinuous"
+    # Group agreeing readings. The biggest group wins; on a tie the group holding the earliest
+    # reading wins - a file stitched from several recordings starts at its first frame.
     groups: List[list] = []
     for t, s in reads:
         for g in groups:

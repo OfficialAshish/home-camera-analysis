@@ -6,15 +6,15 @@ relative to the output folder (the server turns them into URLs); no detection bo
 paths, embeddings, raw model output or scores the UI does not display."""
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
 import pathlib
 import sqlite3
-from collections import defaultdict
+import threading
 from typing import Optional
 
-from .. import reviews as RV
-from ..plates import edit_distance, normalize
+from ..plates import normalize, within_edits
 
 LEVELS = ("HIGH", "REVIEW", "LOW", "NORMAL")
 
@@ -24,11 +24,20 @@ class NotAnOutputFolder(ValueError):
 
 
 def _db(out: str) -> sqlite3.Connection:
+    """Read-only connection to analysis.db with reviews.db attached as `rv` (an empty in-memory
+    table when the folder has no reviews yet), so review filters are a SQL join."""
     p = os.path.join(out, "analysis.db")
     if not os.path.isfile(p):
         raise NotAnOutputFolder("no analysis results in this folder yet")
     db = sqlite3.connect(pathlib.Path(os.path.abspath(p)).as_uri() + "?mode=ro", uri=True, timeout=10)
     db.row_factory = sqlite3.Row
+    rp = os.path.join(out, "reviews.db")
+    if os.path.isfile(rp):
+        db.execute("ATTACH DATABASE ? AS rv", (pathlib.Path(os.path.abspath(rp)).as_uri() + "?mode=ro",))
+    else:
+        db.execute("ATTACH DATABASE ':memory:' AS rv")
+        db.execute("CREATE TABLE rv.reviews (event_id TEXT PRIMARY KEY, status TEXT, notes TEXT, reviewer TEXT, "
+                   "updated TEXT)")
     return db
 
 
@@ -52,7 +61,24 @@ def rel(out: str, path: Optional[str]) -> str:
     return "" if r.startswith("..") else r.replace(os.sep, "/")
 
 
+_SUMMARY: dict = {}
+
+
 def summary(out: str) -> dict:
+    """KPIs of a results folder; cached until analysis.db changes."""
+    p = os.path.abspath(os.path.join(out, "analysis.db"))
+    if not os.path.isfile(p):
+        raise NotAnOutputFolder("no analysis results in this folder yet")
+    key = os.stat(p).st_mtime_ns
+    hit = _SUMMARY.get(p)
+    if hit and hit[0] == key:
+        return hit[1]
+    res = _summary(out)
+    _SUMMARY[p] = (key, res)
+    return res
+
+
+def _summary(out: str) -> dict:
     db = _db(out)
     try:
         v = db.execute("SELECT COUNT(*) n, SUM(duration) d, SUM(motion_seconds) m FROM videos WHERE status='done'").fetchone()
@@ -90,12 +116,13 @@ def events(out: str, day_from: str = "", day_to: str = "", camera: str = "", lev
            person: str = "", plate: str = "", people_only: bool = False, review: str = "", sort: str = "time",
            limit: int = 50, offset: int = 0) -> dict:
     cond, args = ["1=1"], []
+    # plain range predicates so the start_dt index is used (substr() would force a full scan)
     if day_from:
-        cond.append("substr(start_dt,1,10) >= ?")
+        cond.append("start_dt >= ?")
         args.append(day_from)
     if day_to:
-        cond.append("substr(start_dt,1,10) <= ?")
-        args.append(day_to)
+        cond.append("start_dt < ?")
+        args.append((dt.date.fromisoformat(day_to) + dt.timedelta(days=1)).isoformat())
     if camera:
         cond.append("camera = ?")
         args.append(camera)
@@ -115,25 +142,22 @@ def events(out: str, day_from: str = "", day_to: str = "", camera: str = "", lev
         args.append("%" + normalize(plate) + "%")
     if people_only:
         cond.append("n_person_tracks > 0")
-    rv = RV.load(out)
-    if review:
-        ids = [e for e, r in rv.items() if r["status"] == review]
-        if review == "Not reviewed":
-            cond.append("event_id NOT IN (" + ",".join("?" * len(rv)) + ")" if rv else "1=1")
-            args += list(rv)
-        else:
-            cond.append("event_id IN (" + ",".join("?" * len(ids)) + ")" if ids else "0=1")
-            args += ids
+    if review == "Not reviewed":
+        cond.append("r.status IS NULL")
+    elif review:
+        cond.append("r.status = ?")
+        args.append(review)
     order = "score DESC, start_dt" if sort == "score" else "COALESCE(start_dt,''), camera, start_off"
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
     where = " AND ".join(cond)
     db = _db(out)
     try:
-        total = db.execute(f"SELECT COUNT(*) FROM events WHERE {where}", args).fetchone()[0]
+        frm = "events LEFT JOIN rv.reviews r USING(event_id)"
+        total = db.execute(f"SELECT COUNT(*) FROM {frm} WHERE {where}", args).fetchone()[0]
         rows = db.execute(f"SELECT event_id, level, score, camera, start_dt, end_dt, duration, kind, n_person_tracks, "
-                          f"max_persons, plates, identities, flags, snapshots, time_source FROM events WHERE {where} "
-                          f"ORDER BY {order} LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+                          f"max_persons, plates, identities, flags, snapshots, time_source, r.status AS review "
+                          f"FROM {frm} WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
     finally:
         db.close()
     items = []
@@ -144,7 +168,7 @@ def events(out: str, day_from: str = "", day_to: str = "", camera: str = "", lev
                       "flags": [f["flag"] for f in _j(r["flags"], [])],
                       "thumb": rel(out, _best_snapshot(_j(r["snapshots"], []))),
                       "approx_time": not ((r["time_source"] or "").startswith(("filename", "osd", "override"))),
-                      "review": (rv.get(r["event_id"]) or {}).get("status", "Not reviewed")})
+                      "review": r["review"] or "Not reviewed"})
     return {"total": total, "limit": limit, "offset": offset, "items": items}
 
 
@@ -159,6 +183,8 @@ def event_detail(out: str, event_id: str) -> Optional[dict]:
         plates = db.execute("SELECT track, vehicle, text, confidence, valid_format, method, crop_path, enhanced_path, "
                             "watchlist, dt FROM plates WHERE event_id=? ORDER BY confidence DESC", (event_id,)).fetchall()
         vid = db.execute("SELECT duration, time_source FROM videos WHERE id=?", (e["video_id"],)).fetchone()
+        rv = db.execute("SELECT event_id, status, notes, reviewer, updated FROM rv.reviews WHERE event_id=?",
+                        (event_id,)).fetchone()
     finally:
         db.close()
     vlm = _j(e["vlm"], None) or {}
@@ -181,53 +207,76 @@ def event_detail(out: str, event_id: str) -> Optional[dict]:
                         "valid_format": bool(p["valid_format"]), "method": p["method"], "crop": rel(out, p["crop_path"]),
                         "enhanced": rel(out, p["enhanced_path"]), "watchlist": p["watchlist"] or "", "time": p["dt"]}
                        for p in plates],
-            "review": RV.load(out).get(event_id)}
+            "review": dict(rv) if rv else None}
 
 
 def highlights(out: str) -> list:
+    """One row per day (newest first); the index of a day comes from highlight_day()."""
     db = _db(out)
     try:
-        rows = db.execute("SELECT r.day, r.idx, r.reel_start, r.reel_end, r.reel_path, e.event_id, e.camera, "
-                          "e.start_dt, e.level, e.score, e.rel_path, e.start_off FROM reel_segments r "
-                          "JOIN events e USING(event_id) ORDER BY r.day DESC, r.idx").fetchall()
+        rows = db.execute("SELECT day, COUNT(*) n, MAX(reel_end) secs, MAX(reel_path) reel FROM reel_segments "
+                          "GROUP BY day ORDER BY day DESC").fetchall()
     finally:
         db.close()
-    days = defaultdict(list)
-    for r in rows:
-        days[r["day"]].append(r)
-    out_ = []
-    for d, segs in days.items():
-        out_.append({"day": d, "reel": rel(out, segs[0]["reel_path"]), "movements": len(segs),
-                     "seconds": segs[-1]["reel_end"],
-                     "index": [{"n": s["idx"], "at": s["reel_start"], "until": s["reel_end"], "camera": s["camera"],
-                                "time": s["start_dt"], "level": s["level"], "score": s["score"],
-                                "event_id": s["event_id"], "video": s["rel_path"], "offset": s["start_off"]}
-                               for s in segs]})
-    return out_
+    return [{"day": r["day"], "reel": rel(out, r["reel"]), "movements": r["n"], "seconds": r["secs"]} for r in rows]
+
+
+def highlight_day(out: str, day: str) -> Optional[dict]:
+    db = _db(out)
+    try:
+        segs = db.execute("SELECT r.idx, r.reel_start, r.reel_end, r.reel_path, e.event_id, e.camera, e.start_dt, "
+                          "e.level, e.score, e.rel_path, e.start_off FROM reel_segments r JOIN events e "
+                          "USING(event_id) WHERE r.day = ? ORDER BY r.idx", (day,)).fetchall()
+    finally:
+        db.close()
+    if not segs:
+        return None
+    return {"day": day, "reel": rel(out, segs[0]["reel_path"]), "movements": len(segs), "seconds": segs[-1]["reel_end"],
+            "index": [{"n": s["idx"], "at": s["reel_start"], "until": s["reel_end"], "camera": s["camera"],
+                       "time": s["start_dt"], "level": s["level"], "score": s["score"], "event_id": s["event_id"],
+                       "video": s["rel_path"], "offset": s["start_off"]} for s in segs]}
+
+
+_TEXTS = {}
+_TEXTS_LOCK = threading.Lock()
+
+
+def _plate_texts(out: str, db) -> list:
+    """Distinct plate texts, cached per output folder until analysis.db changes."""
+    p = os.path.join(out, "analysis.db")
+    key = (os.path.abspath(p), os.stat(p).st_mtime_ns)
+    with _TEXTS_LOCK:
+        hit = _TEXTS.get(key[0])
+        if hit and hit[0] == key[1]:
+            return hit[1]
+    texts = [r[0] for r in db.execute("SELECT DISTINCT text FROM plates WHERE text != ''")]
+    with _TEXTS_LOCK:
+        _TEXTS[key[0]] = (key[1], texts)
+    return texts
 
 
 def plates_search(out: str, q: str = "", max_edits: int = 1, limit: int = 100) -> list:
+    nq = normalize(q)
     db = _db(out)
     try:
-        rows = db.execute("SELECT p.text, p.confidence, p.valid_format, p.dt, p.camera, p.event_id, p.vehicle, "
-                          "p.crop_path, p.enhanced_path, p.watchlist FROM plates p WHERE p.text != '' "
-                          "ORDER BY p.dt DESC").fetchall()
+        if nq:
+            match = [t for t in _plate_texts(out, db) if nq in t or within_edits(nq, t, max_edits)]
+            if not match:
+                return []
+            match = match[:900]                     # SQLite variable limit; more is not a useful search
+            rows = db.execute("SELECT text, confidence, valid_format, dt, camera, event_id, vehicle, crop_path, "
+                              "enhanced_path, watchlist FROM plates WHERE text IN (" + ",".join("?" * len(match)) +
+                              ") ORDER BY dt DESC LIMIT ?", match + [int(limit)]).fetchall()
+        else:
+            rows = db.execute("SELECT text, confidence, valid_format, dt, camera, event_id, vehicle, crop_path, "
+                              "enhanced_path, watchlist FROM plates WHERE text != '' ORDER BY dt DESC LIMIT ?",
+                              (int(limit),)).fetchall()
     finally:
         db.close()
-    nq = normalize(q)
-    res = []
-    for r in rows:
-        if nq:
-            t = r["text"]
-            if nq not in t and edit_distance(nq, t) > max_edits:
-                continue
-        res.append({"text": r["text"], "confidence": r["confidence"], "valid_format": bool(r["valid_format"]),
-                    "time": r["dt"], "camera": r["camera"], "event_id": r["event_id"], "vehicle": r["vehicle"],
-                    "crop": rel(out, r["crop_path"]), "enhanced": rel(out, r["enhanced_path"]),
-                    "watchlist": r["watchlist"] or ""})
-        if len(res) >= limit:
-            break
-    return res
+    return [{"text": r["text"], "confidence": r["confidence"], "valid_format": bool(r["valid_format"]),
+             "time": r["dt"], "camera": r["camera"], "event_id": r["event_id"], "vehicle": r["vehicle"],
+             "crop": rel(out, r["crop_path"]), "enhanced": rel(out, r["enhanced_path"]),
+             "watchlist": r["watchlist"] or ""} for r in rows]
 
 
 def faces(out: str, limit: int = 300) -> list:

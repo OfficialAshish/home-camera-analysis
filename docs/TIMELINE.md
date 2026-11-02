@@ -37,8 +37,8 @@ CJK dates, and letter/digit confusions inside numbers (`2O26`, `3B`). Ambiguous 
 folder date, else `osd_date_order` (`auto|ymd|dmy|mdy`).
 
 Safety checks: an OSD reading must be within ±1 day of the folder date and after 2005 (unset DVR
-clocks print 2000‑01‑01); two early readings must agree; a later disagreement marks the file
-*discontinuous* and each event then reads its own clock (`osd_verify_events`,
+clocks print 2000‑01‑01); readings are grouped by agreement, the biggest group wins (ties → the
+group with the earliest reading); more than one group marks the file *discontinuous* and each event then reads its own clock (`osd_verify_events`,
 `osd_event_tolerance` = 5 s).
 
 ## Order of processing and of reels

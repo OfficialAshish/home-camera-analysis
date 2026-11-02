@@ -159,6 +159,12 @@ def test_results_endpoints(analysed):
     assert img.status_code == 200 and img.data[:2] == b"\xff\xd8"
     hl = c.get("/api/results/highlights", query_string={"out": out}, headers=H()).get_json()["days"]
     assert [x["day"] for x in hl] == ["2026-10-31"] and hl[0]["reel"].startswith("highlights/2026/10-Oct/")
+    assert "index" not in hl[0]                                              # list stays small
+    day = c.get("/api/results/highlights/2026-10-31", query_string={"out": out}, headers=H()).get_json()
+    assert len(day["index"]) == hl[0]["movements"] == 3
+    assert [x["time"] for x in day["index"]] == sorted(x["time"] for x in day["index"])
+    assert c.get("/api/results/highlights/2026-01-01", query_string={"out": out}, headers=H()).status_code == 404
+    assert c.get("/api/results/highlights/x;drop", query_string={"out": out}, headers=H()).status_code == 400
     v = c.get("/api/file", query_string={"out": out, "p": hl[0]["reel"]}, headers=H(Range="bytes=0-99"))
     assert v.status_code == 206 and len(v.data) == 100                       # seekable video
     assert c.get("/api/results/events/nope", query_string={"out": out}, headers=H()).status_code == 404
@@ -204,6 +210,16 @@ def test_review_persists_across_reanalysis_sync(analysed):
     assert d["review"]["status"] == "Suspicious" and d["review"]["notes"] == "check gate"
     f = c.get("/api/results/events", query_string={"out": out, "levels": "", "review": "Suspicious"}, headers=H()).get_json()
     assert [x["event_id"] for x in f["items"]] == [eid]
+    allev = c.get("/api/results/events", query_string={"out": out, "levels": ""}, headers=H()).get_json()["total"]
+    nr = c.get("/api/results/events", query_string={"out": out, "levels": "", "review": "Not reviewed"}, headers=H()).get_json()
+    assert nr["total"] == allev - 1 and eid not in [x["event_id"] for x in nr["items"]]
+    day = f["items"][0]["start"][:10]
+    one_day = c.get("/api/results/events", query_string={"out": out, "levels": "", "day_from": day, "day_to": day},
+                    headers=H()).get_json()["total"]
+    assert one_day == allev                                                  # every test event is on that day
+    none = c.get("/api/results/events", query_string={"out": out, "levels": "", "day_from": "2027-01-01",
+                                                      "day_to": "2027-01-01"}, headers=H()).get_json()["total"]
+    assert none == 0
 
 
 def test_evidence_export_and_verification(analysed):

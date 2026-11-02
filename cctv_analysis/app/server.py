@@ -577,6 +577,15 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     def r_highlights():
         return jsonify(days=RS.highlights(out_param()))
 
+    @app.get("/api/results/highlights/<day>")
+    def r_highlight_day(day):
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}|unknown-date", day):
+            raise ApiError(400, "day must be YYYY-MM-DD")
+        d = RS.highlight_day(out_param(), day)
+        if d is None:
+            raise ApiError(404, "no highlight video for this day")
+        return jsonify(d)
+
     @app.get("/api/results/plates")
     def r_plates():
         try:

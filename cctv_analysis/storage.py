@@ -74,6 +74,7 @@ class Store:
         self.db.executescript(SCHEMA)
         self._migrate()
         self.db.execute("CREATE INDEX IF NOT EXISTS ix_ev_run ON events(run_id)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ev_score ON events(score DESC, start_dt)")
         self.db.commit()
 
     # columns added in later versions – keeps databases from older runs working

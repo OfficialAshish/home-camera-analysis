@@ -323,8 +323,11 @@ async function loadHighlights() {
   } catch (e) { toast(e.message, true); }
 }
 $("hl-day").addEventListener("change", (e) => showDay(parseInt(e.target.value, 10)));
-function showDay(i) {
-  const d = S.days[i]; const v = $("hl-video");
+async function showDay(i) {
+  let d;
+  try { d = await api("GET", "/api/results/highlights/" + encodeURIComponent(S.days[i].day) + "?out=" + encodeURIComponent(S.resOut)); }
+  catch (e) { toast(e.message, true); return; }
+  const v = $("hl-video");
   v.src = fileUrl(S.resOut, d.reel);
   clear($("hl-index"), d.index.map(s => el("div", { onclick: () => { v.currentTime = s.at + 0.05; v.play(); } },
     el("b", { text: clock(s.at) }), `  ${(s.time || "").slice(11) || "?"}  ${s.camera || ""}  `, el("span", { class: "lv lv-" + s.level, text: s.level }),

@@ -52,7 +52,7 @@ MUTATIONS = [
      "    return hint is None or abs((d.date() - hint).days) <= 1", "    return True",
      "tests/test_timeline.py::test_osd_rejects_reading_that_contradicts_folder_date", False),
     ("file start from its first frames", "cctv_analysis/timeline.py",
-     "    if len(early) >= 2 and close(early[0][1], early[1][1]):", "    if False:",
+     "    groups.sort(key=lambda g: (-len(g), g[0][0]))", "    groups.sort(key=lambda g: (-len(g), -g[0][0]))",
      "tests/test_timeline.py::test_stitched_file_is_flagged_discontinuous", False),
     ("plate never 'corrected' twice", "cctv_analysis/plates.py", "    if best is None or best[1] > 1:",
      "    if best is None or best[1] > 2:", "tests/test_plates.py::test_indian_format_fit", False),

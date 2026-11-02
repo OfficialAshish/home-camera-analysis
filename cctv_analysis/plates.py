@@ -151,6 +151,25 @@ def is_reportable(text: str, confidence: float, valid_format: bool) -> bool:
     return bool(text) and (valid_format or (len(text) >= 6 and confidence >= 0.7))
 
 
+def within_edits(a: str, b: str, k: int) -> bool:
+    """edit_distance(a, b) <= k, computed only inside the diagonal band and stopped as soon as
+    every cell exceeds k (fast for the common 'no match' case)."""
+    if abs(len(a) - len(b)) > k:
+        return False
+    if k == 0:
+        return a == b
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [k + 1] * len(b)
+        lo, hi = max(1, i - k), min(len(b), i + k)
+        for j in range(lo, hi + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != b[j - 1]))
+        if min(cur[max(0, lo - 1):hi + 1]) > k:
+            return False
+        prev = cur
+    return prev[-1] <= k
+
+
 def watchlist_match(text: str, watchlist: List[str], max_edits: int = 1) -> str:
     t = normalize(text)
     if not t:
