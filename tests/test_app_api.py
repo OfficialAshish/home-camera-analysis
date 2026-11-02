@@ -99,6 +99,7 @@ def test_rejects_bad_config(env):
     r = c.post("/api/jobs", json={"config": {"input_dir": str(env["inp"]), "output_dir": str(env["inp"])}}, headers=H())
     assert r.status_code == 400
     assert c.post("/api/jobs", data="x" * (2 << 20), headers=H(**{"Content-Type": "application/json"})).status_code == 413
+    assert c.post("/api/jobs", data="x" * (13 << 20), headers=H(**{"Content-Type": "application/json"})).status_code == 413
 
 
 def test_folder_browser_lists_directories(env):

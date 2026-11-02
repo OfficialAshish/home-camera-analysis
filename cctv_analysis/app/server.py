@@ -161,7 +161,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     os.makedirs(data_dir, exist_ok=True)
     token = token or secrets.token_urlsafe(32)
     app = Flask(__name__, static_folder=STATIC, static_url_path="/static")
-    app.config["MAX_CONTENT_LENGTH"] = 1 << 20
+    app.config["MAX_CONTENT_LENGTH"] = 12 << 20         # photo uploads; JSON bodies are capped at 1 MB in body()
     app.config.update(CCTV_TOKEN=token, CCTV_DATA=data_dir, CCTV_PORT=port)
     jobs = JobManager()
     settings = Settings(data_dir)
@@ -234,6 +234,8 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         return jsonify(error="internal error – see the app log"), 500
 
     def body() -> dict:
+        if (request.content_length or 0) > (1 << 20):
+            raise ApiError(413, "request too large")
         d = request.get_json(silent=True)
         if not isinstance(d, dict):
             raise ApiError(400, "JSON object body required")
@@ -597,6 +599,29 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     @app.get("/api/results/faces")
     def r_faces():
         return jsonify(faces=RS.faces(out_param()))
+
+    @app.post("/api/results/face-search")
+    def r_face_search():
+        """Search by photo (multipart field 'photo', max 12 MB)."""
+        import cv2
+        import numpy as np
+
+        from .. import modelcache
+        from ..faces import FaceEngine, match_identities
+        out = out_param()
+        f = request.files.get("photo")
+        if f is None:
+            raise ApiError(400, "photo file required")
+        data = f.read(12 << 20)
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR) if data else None
+        if img is None:
+            raise ApiError(400, "not an image (use JPG or PNG)")
+        modelcache.init(os.path.join(data_dir, "models"))
+        cfg = Config(output_dir=out)
+        matches = match_identities(FaceEngine(cfg), img, os.path.join(out, "identities"), cfg.face_match_threshold - 0.05)
+        if matches is None:
+            raise ApiError(422, "no face found in the photo")
+        return jsonify(matches=RS.appearances(out, matches))
 
     @app.get("/api/file")
     def file_():

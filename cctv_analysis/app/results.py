@@ -293,3 +293,20 @@ def faces(out: str, limit: int = 300) -> list:
     return [{"identity": r["identity"], "name": r["name"] or "", "events": r["events"], "first": r["first"],
              "last": r["last"], "cameras": sorted(set((r["cams"] or "").split(","))), "sample": rel(out, r["sample"]),
              "new": r["identity"] in new} for r in rows]
+
+
+def appearances(out: str, matches) -> list:
+    """Events of each matched identity (search by photo)."""
+    db = _db(out)
+    try:
+        res = []
+        for pid, sim in matches[:20]:
+            rows = db.execute("SELECT t.event_id, t.first_dt, t.face_crop, e.camera, e.rel_path, t.first_off FROM tracks t "
+                              "JOIN events e USING(event_id) WHERE t.identity=? ORDER BY t.first_dt LIMIT 200",
+                              (pid,)).fetchall()
+            res.append({"identity": pid, "similarity": round(sim, 3), "sample": rel(out, rows[0]["face_crop"]) if rows else "",
+                        "appearances": [{"event_id": r["event_id"], "time": r["first_dt"], "camera": r["camera"],
+                                         "video": r["rel_path"], "offset": r["first_off"]} for r in rows]})
+    finally:
+        db.close()
+    return res

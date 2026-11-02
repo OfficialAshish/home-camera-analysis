@@ -270,3 +270,21 @@ class IdentityDB:
         with open(self.path + ".json", "w") as fh:
             json.dump(self.ids, fh, indent=1)
         np.save(self.path + ".npy", np.stack(self.emb) if self.emb else np.zeros((0, 128), np.float32))
+
+
+def match_identities(engine: FaceEngine, img: np.ndarray, identities_path: str, threshold: float):
+    """Search by photo: [(identity id, similarity)] of stored identities matching the largest face
+    in `img`, best first. Returns None when the photo has no detectable face."""
+    faces = sorted(engine.detect_full(img), key=lambda f: -(f["box"][2] - f["box"][0]))
+    if not faces:
+        return None
+    q = engine.embed(img, faces[0])
+    if q is None or not (os.path.exists(identities_path + ".json") and os.path.exists(identities_path + ".npy")):
+        return []
+    with open(identities_path + ".json") as fh:
+        ids = json.load(fh)
+    emb = np.load(identities_path + ".npy")
+    if len(ids) != len(emb) or not len(emb):
+        return []
+    sims = emb @ q
+    return [(ids[i]["id"], float(sims[i])) for i in np.argsort(-sims) if sims[i] >= threshold]

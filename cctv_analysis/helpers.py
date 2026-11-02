@@ -165,32 +165,25 @@ def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
 
 def search_face(cfg: Config, image_path: str, min_sim: Optional[float] = None, show: int = 12):
     """Search-by-photo: find every appearance of the person in `image_path`."""
-    from .faces import FaceEngine
+    from .faces import FaceEngine, match_identities
     fe = FaceEngine(cfg)
     img = cv2.imread(image_path)
     if img is None:
         raise FileNotFoundError(image_path)
-    faces = sorted(fe.detect_full(img), key=lambda f: -(f["box"][2] - f["box"][0]))
-    if not faces:
+    thr = cfg.face_match_threshold - 0.05 if min_sim is None else min_sim
+    matches = match_identities(fe, img, os.path.join(cfg.output_dir, "identities"), thr)
+    if matches is None:
         print("No face found in the photo.")
         return []
-    q = fe.embed(img, faces[0])
-    path = os.path.join(cfg.output_dir, "identities")
-    ids = json.load(open(path + ".json"))
-    emb = np.load(path + ".npy")
-    sims = emb @ q
-    thr = cfg.face_match_threshold - 0.05 if min_sim is None else min_sim
-    order = [i for i in np.argsort(-sims) if sims[i] >= thr]
     st = _store(cfg)
     out = []
-    for i in order:
-        pid = ids[i]["id"]
+    for pid, sim in matches:
         rows = st.query("SELECT t.event_id, t.first_dt, t.face_crop, e.rel_path, t.first_off, e.camera FROM tracks t "
                         "JOIN events e USING(event_id) WHERE t.identity=? ORDER BY t.first_dt", (pid,))
-        print(f"\n{pid} similarity {sims[i]:.3f} — {len(rows)} appearance(s)")
+        print(f"\n{pid} similarity {sim:.3f} — {len(rows)} appearance(s)")
         for r in rows:
             print(f"   {r['first_dt']}  {r['camera']}  {r['event_id']}  {r['rel_path']} @ {V.fmt_offset(r['first_off'])}")
-            out.append({**r, "identity": pid, "similarity": float(sims[i])})
+            out.append({**r, "identity": pid, "similarity": sim})
         if rows and rows[0]["face_crop"] and show:
             im = cv2.imread(rows[0]["face_crop"])
             if im is not None:

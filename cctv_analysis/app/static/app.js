@@ -356,6 +356,25 @@ async function loadFaces() {
   } catch (e) { toast(e.message, true); }
 }
 
+$("fs-go").addEventListener("click", async (ev) => {
+  const f = $("fs-photo").files[0];
+  if (!f) { toast("Choose a photo first.", true); return; }
+  if (!S.resOut) { toast("Open a results folder first (Results tab).", true); return; }
+  busy(ev.target, true);
+  try {
+    const fd = new FormData(); fd.append("photo", f);
+    const r = await fetch("/api/results/face-search?out=" + encodeURIComponent(S.resOut), { method: "POST", headers: { "X-CCTV-Token": TOKEN }, body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    clear($("fs-out"), d.matches.length ? d.matches.map(m => el("div", { class: "card" },
+      el("div", { class: "row" }, m.sample ? el("img", { src: fileUrl(S.resOut, m.sample), width: "80" }) : null,
+        el("b", { text: m.identity }), ` similarity ${m.similarity} · ${m.appearances.length} appearance(s)`),
+      el("table", {}, m.appearances.map(a => el("tr", { onclick: () => { showTab("results"); openEvent(a.event_id); } },
+        el("td", { text: a.time || "" }), el("td", { text: a.camera || "" }), el("td", { class: "mono small", text: `${a.video} @ ${clock(a.offset)}` })))))) :
+      [el("p", { class: "hint", text: "No matching person found." })]);
+  } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }
+});
+
 // -------------------------------------------------------------------- export
 function exportList() { try { return JSON.parse(localStorage.getItem("cctv-export:" + S.resOut) || "[]"); } catch (_) { return []; } }
 function addToExport(e) {
