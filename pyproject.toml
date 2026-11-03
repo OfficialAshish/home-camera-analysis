@@ -1,0 +1,24 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["cctv-analysis.ipynb", "test_data", ".test_models"]
+
+[tool.ruff.lint]
+# pyflakes (undefined names, unused imports/variables), pycodestyle errors, bugbear-lite, imports
+select = ["F", "E", "W", "B006", "B008", "B017", "B023", "I001"]
+ignore = ["E501", "E731", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E402"]
+"tests/make_*.py" = ["E401", "E702"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["release: checks for a release build (run with -m release)"]
+addopts = "-m 'not release'"
+
+[tool.mypy]
+files = ["cctv_analysis"]
+ignore_missing_imports = true
+strict_optional = false
+follow_imports = "silent"

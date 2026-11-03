@@ -12,9 +12,11 @@ import cv2
 import numpy as np
 
 from . import annotate as A
+from . import timeline as T
 from . import video_io as V
 from .config import Config
 from .motion import detect_osd_mask, poly_mask
+from .ocr import get_ocr
 from .rules import zones_for
 from .storage import Store
 
@@ -63,7 +65,7 @@ def preview_cameras(cfg: Config, per_camera: int = 1, width: int = 960):
         for p in ps[:per_camera]:
             meta = V.probe(p)
             tot += meta["duration"]
-            st, src = V.infer_start_time(p, meta, cfg)
+            st, src = T.resolve_start_time(p, meta, cfg, get_ocr(cfg.ocr_engine))
             print(f"  {os.path.relpath(p, cfg.input_dir)} | {meta['width']}x{meta['height']} {meta['fps']:.1f}fps "
                   f"{V.fmt_offset(meta['duration'])} {meta['codec']} | start {st} ({src})")
             f = V.read_frame_at(p, min(5.0, meta["duration"] / 2), width, (meta["width"], meta["height"]))
@@ -126,7 +128,7 @@ def show_events(cfg: Config, where: str = "level IN ('HIGH','REVIEW')", order: s
     return rows
 
 
-_SEM_CACHE = {}
+_SEM_CACHE: dict = {}
 
 
 def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
@@ -141,8 +143,8 @@ def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
     hits = search_index(sem, os.path.join(cfg.output_dir, "semantic_index.npz"), query, k)
     st = _store(cfg)
     results = []
-    for key, score in hits:
-        eid, t = key.split("|")
+    for hit, score in hits:
+        eid, t = hit.split("|")
         e = st.query("SELECT * FROM events WHERE event_id=?", (eid,))
         if not e:
             continue
@@ -163,32 +165,25 @@ def search_text(cfg: Config, query: str, k: int = 12, show: bool = True):
 
 def search_face(cfg: Config, image_path: str, min_sim: Optional[float] = None, show: int = 12):
     """Search-by-photo: find every appearance of the person in `image_path`."""
-    from .faces import FaceEngine
+    from .faces import FaceEngine, match_identities
     fe = FaceEngine(cfg)
     img = cv2.imread(image_path)
     if img is None:
         raise FileNotFoundError(image_path)
-    faces = sorted(fe.detect_full(img), key=lambda f: -(f["box"][2] - f["box"][0]))
-    if not faces:
+    thr = cfg.face_match_threshold - 0.05 if min_sim is None else min_sim
+    matches = match_identities(fe, img, os.path.join(cfg.output_dir, "identities"), thr)
+    if matches is None:
         print("No face found in the photo.")
         return []
-    q = fe.embed(img, faces[0])
-    path = os.path.join(cfg.output_dir, "identities")
-    ids = json.load(open(path + ".json"))
-    emb = np.load(path + ".npy")
-    sims = emb @ q
-    thr = cfg.face_match_threshold - 0.05 if min_sim is None else min_sim
-    order = [i for i in np.argsort(-sims) if sims[i] >= thr]
     st = _store(cfg)
     out = []
-    for i in order:
-        pid = ids[i]["id"]
+    for pid, sim in matches:
         rows = st.query("SELECT t.event_id, t.first_dt, t.face_crop, e.rel_path, t.first_off, e.camera FROM tracks t "
                         "JOIN events e USING(event_id) WHERE t.identity=? ORDER BY t.first_dt", (pid,))
-        print(f"\n{pid} similarity {sims[i]:.3f} — {len(rows)} appearance(s)")
+        print(f"\n{pid} similarity {sim:.3f} — {len(rows)} appearance(s)")
         for r in rows:
             print(f"   {r['first_dt']}  {r['camera']}  {r['event_id']}  {r['rel_path']} @ {V.fmt_offset(r['first_off'])}")
-            out.append({**r, "identity": pid, "similarity": float(sims[i])})
+            out.append({**r, "identity": pid, "similarity": sim})
         if rows and rows[0]["face_crop"] and show:
             im = cv2.imread(rows[0]["face_crop"])
             if im is not None:
@@ -279,7 +274,7 @@ def review_dashboard(cfg: Config):
     """Interactive filter panel (date range, camera, level, person ID, text, new faces) for the notebook."""
     try:
         import ipywidgets as W
-        from IPython.display import display, clear_output
+        from IPython.display import clear_output, display
     except Exception:
         print("ipywidgets not available – use show_events(cfg, where=...) instead.")
         return

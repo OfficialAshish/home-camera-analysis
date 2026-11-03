@@ -1,0 +1,78 @@
+name: CI
+on:
+  push:                  # every branch; PRs show the checks of their head commit
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install ruff mypy nbformat
+      - name: Lint
+        run: ruff check .
+      - name: Type check
+        run: mypy
+      - name: Notebook is generated from the package
+        run: python tools/build_notebook.py && git diff --exit-code cctv-analysis.ipynb
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip}
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-dev.txt
+      - run: python -m playwright install --with-deps chromium
+      - uses: actions/cache@v4
+        with:
+          path: .test_models
+          key: test-models-v1-${{ hashFiles('cctv_analysis/config.py', 'cctv_analysis/plates.py') }}
+          restore-keys: test-models-v1-
+      - name: Environment used for this run
+        run: |
+          python --version; ffmpeg -hide_banner -version | head -1
+          env | grep -E '^(NODE_ENV|CCTV_|HF_|PYTHONPATH)=' || true
+      - name: Tests (unit, pipeline e2e, app API, browser UI, plates, VLM providers)
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:cacheprovider -rfE 2>&1 | tee pytest.log
+      - name: Post the failure summary on the pull request
+        if: failure() && github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          { echo "### CI test failure at ${GITHUB_SHA::7}"; echo '```'; grep -E "^(FAILED|ERROR)|^E  " pytest.log | head -60; echo; tail -n 25 pytest.log; echo '```'; } > summary.md
+          gh pr comment "${GITHUB_REF_NAME}" --body-file summary.md || echo "no open pull request for this branch"
+      - name: Packaged-app self test (source install)
+        run: python -m cctv_analysis.app --self-test
+
+  windows-app:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Build CCTVAnalysis.exe
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CCTVAnalysis-windows
+          path: dist/CCTVAnalysis
+          retention-days: 14

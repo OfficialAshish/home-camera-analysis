@@ -1,7 +1,11 @@
 """Builds a synthetic 'shop CCTV' clip: static scene + burnt-in clock, idle
 stretches, a walking person-like blob, a lights-off moment and a covered lens."""
-import sys, datetime as dt
-import cv2, numpy as np
+import datetime as dt
+import sys
+
+import cv2
+import numpy as np
+
 out = sys.argv[1]
 W, H, FPS, SECS = 640, 360, 12, 150
 vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))

@@ -1,5 +1,4 @@
 """Generates cctv-analysis.ipynb from the package sources (single source of truth)."""
-import glob
 import os
 
 import nbformat as nbf
@@ -28,7 +27,8 @@ This notebook scans every recording in a Google Drive folder and produces a **re
 | **Faces**: detected, quality-scored, cropped and **grouped into identities across days** (P0001, P0002 …); known staff can be labelled | *Faces*, *Face Identities* |
 | **Suspicion score 0–100** with plain-English reasons: after-hours activity, camera tampering, loitering, running, crowding, hidden face, hands up, restricted zone, weapon-like objects, AI scene match | *Events* (sortable) |
 | **AI description** of each flagged event (Qwen3-VL vision-language model) | *Events* → *AI description* |
-| **Daily highlight reel** – every movement of the day from all cameras, with running clock + source burnt in, and a timing table (reel time → camera, clock, video, offset) | `highlights/<year>/<date>_highlights.mp4`, *Highlights* sheet |
+| **Daily highlight video** – every movement of the day from all cameras **in true time order** (time read from the file name or the DVR clock printed on the picture), original picture without added text, plus a timing table (reel time → camera, clock, video, offset) | `highlights/<year>/<MM-Mon>/<date>_highlights.mp4`, *Highlights* sheet |
+| **Number plates** *(optional)* – plate detector + plate OCR, Indian formats, motion-deblur for fast vehicles, plate watchlist | *Number Plates* sheet |
 | **Weekly workbooks** (`reports/2026/11-17-Oct-2026-W41.xlsx`) plus an all-time `CCTV_Report.xlsx` | `reports/` |
 | **Unique faces** workbook: every distinct person with photo, first/last seen, days, cameras; **NEW faces highlighted** and alerted at the end of each run | `Unique_Faces.xlsx` |
 | **Authorised-only cameras**: anyone who is not a known face there is flagged | *Events*, *Unauthorized alerts* |
@@ -55,7 +55,7 @@ except ImportError:
 md("## Step 2 · Install dependencies (~1–2 min)")
 code("""
 #@title Install packages
-!pip -q install -U "ultralytics>=8.3.200" lap xlsxwriter "transformers>=4.57" accelerate sentencepiece protobuf
+!pip -q install -U "ultralytics>=8.3.200" lap xlsxwriter "transformers>=4.57" accelerate sentencepiece protobuf rapidocr-onnxruntime fast-plate-ocr open-image-models psutil
 !apt-get -qq install -y ffmpeg > /dev/null 2>&1 || true
 import importlib, ultralytics, transformers, torch, cv2
 print("ultralytics", ultralytics.__version__, "| transformers", transformers.__version__,
@@ -67,8 +67,9 @@ md("""
 The next cells write the `cctv_analysis` package to `/content` (same code as the GitHub repo, so the notebook is fully self-contained).
 You don't need to read or edit them — collapse the section and move on.
 """)
-order = ["__init__", "config", "modelcache", "video_io", "motion", "detector", "faces", "semantic", "vlm", "rules",
-         "annotate", "storage", "reels", "report", "pipeline", "helpers", "__main__"]
+order = ["__init__", "config", "modelcache", "video_io", "ocr", "timeline", "motion", "detector", "faces", "semantic",
+         "vlm", "plates", "rules", "annotate", "storage", "reviews", "audit", "reels", "report", "pipeline", "retime",
+         "evidence", "sysinfo", "helpers", "__main__"]
 for name in order:
     src = open(os.path.join(ROOT, "cctv_analysis", name + ".py"), encoding="utf-8").read()
     code(f"%%writefile /content/cctv_analysis/{name}.py\n" + src)
@@ -115,7 +116,15 @@ REEL_CONTENT = "all"  #@param ["all", "people", "flagged"]
 WEEK_STARTS_ON = "sunday"  #@param ["sunday", "monday"]
 MOTION_SENSITIVITY = 0.5  #@param {type:"slider", min:0.1, max:0.9, step:0.05}
 USE_FACES = True  #@param {type:"boolean"}
+UNIQUE_FACES = True  #@param {type:"boolean"}
+READ_NUMBER_PLATES = False  #@param {type:"boolean"}
+ENHANCE_HARD_PLATES = False  #@param {type:"boolean"}
+PLATE_WATCHLIST = ""  #@param {type:"string"}
+TEXT_ON_HIGHLIGHT_VIDEOS = False  #@param {type:"boolean"}
 USE_AI_DESCRIPTIONS = True  #@param {type:"boolean"}
+AI_MODEL_RUNS_IN = "transformers"  #@param ["transformers", "openai"]
+AI_SERVER_URL = ""  #@param {type:"string"}
+# AI_SERVER_URL: an OpenAI-compatible server (Ollama http://HOST:11434/v1, LM Studio, vLLM) when AI_MODEL_RUNS_IN = "openai"
 AI_DESCRIBE = "flagged"  #@param ["flagged", "people", "all"]
 SAVE_CLIPS = "people"  #@param ["all", "people", "flagged", "none"]
 ONLY_NEWER_THAN_DAYS = 0  #@param {type:"number"}
@@ -142,21 +151,15 @@ EXTRA = {}                    # any other Config field, e.g. {"loiter_seconds": 
 """, hide=True)
 code("""
 #@title Build configuration
-from cctv_analysis.config import Config
-PRESETS = {
-    "fast":     dict(motion_fps=3, detect_fps=3, detector_model="yolo26n.pt", detector_fallbacks=["yolo11n.pt"],
-                     use_pose=False, det_imgsz=640, detect_width=960, semantic_model="google/siglip2-base-patch16-224"),
-    "balanced": dict(motion_fps=4, detect_fps=5, detector_model="yolo26s.pt", detector_fallbacks=["yolo11s.pt"],
-                     use_pose=True, det_imgsz=960, detect_width=1280, semantic_model="google/siglip2-base-patch16-224"),
-    "accurate": dict(motion_fps=5, detect_fps=8, detector_model="yolo26m.pt", detector_fallbacks=["yolo11m.pt"],
-                     use_pose=True, pose_model="yolo26s-pose.pt", det_imgsz=1280, detect_width=1920,
-                     semantic_model="google/siglip2-so400m-patch14-384", vlm_model="Qwen/Qwen3-VL-4B-Instruct"),
-}
+from cctv_analysis.config import Config, PRESETS
 cfg = Config(
     input_dir=INPUT_DIR, output_dir=OUTPUT_DIR, work_dir="/content/cctv_work",
     known_faces_dir=KNOWN_FACES_DIR if os.path.isdir(KNOWN_FACES_DIR) else "",
     timezone=TIMEZONE, open_hour=OPEN_HOUR, close_hour=CLOSE_HOUR, closed_weekdays=CLOSED_WEEKDAYS,
-    motion_sensitivity=MOTION_SENSITIVITY, use_faces=USE_FACES, use_vlm=USE_AI_DESCRIPTIONS, vlm_scope=AI_DESCRIBE,
+    motion_sensitivity=MOTION_SENSITIVITY, use_faces=USE_FACES, face_identities=UNIQUE_FACES,
+    use_plates=READ_NUMBER_PLATES, plate_enhance=ENHANCE_HARD_PLATES,
+    plate_watchlist=[k.strip() for k in PLATE_WATCHLIST.split(",") if k.strip()], reel_overlay=TEXT_ON_HIGHLIGHT_VIDEOS,
+    use_vlm=USE_AI_DESCRIPTIONS, vlm_scope=AI_DESCRIBE, vlm_provider=AI_MODEL_RUNS_IN, vlm_base_url=AI_SERVER_URL,
     save_clips=SAVE_CLIPS != "none", clip_scope=SAVE_CLIPS if SAVE_CLIPS != "none" else "flagged",
     only_newer_than_days=ONLY_NEWER_THAN_DAYS, max_videos=MAX_VIDEOS, reprocess=REPROCESS_ALL,
     max_runtime_minutes=STOP_AFTER_MINUTES,
@@ -169,13 +172,14 @@ cfg = Config(
 for k, v in EXTRA.items():
     setattr(cfg, k, v)
 assert os.path.isdir(cfg.input_dir), f"INPUT_DIR not found: {cfg.input_dir}"
+assert not cfg.validate(), cfg.validate()
 print("Config ready →", cfg.output_dir)
 """, hide=True)
 
 md("""
 ## Step 4 · Preview (recommended once)
 Shows every camera found, how the recording start time was worked out, and one frame per camera with a **0.1 grid** (to write zone coordinates), your **zones** (red), **ignored areas** (blue) and the **auto-detected DVR clock** (magenta, ignored for motion).
-If a start time says `file-modified(approx)`, add a pattern or override in *Advanced settings*.
+Times come from the file name, else from the **DVR clock printed on the picture** (read by OCR and cross-checked at several points of each file and against a date in the folder name such as `31Oct26`). If a start time says `approx`, add a pattern or override in *Advanced settings*.
 """)
 code("""
 #@title Preview cameras
@@ -219,6 +223,14 @@ code("""
 DAY = ""  #@param {type:"string"}
 from cctv_analysis.helpers import show_highlights
 _ = show_highlights(cfg, DAY or None)
+""", hide=True)
+code("""
+#@title 🕒 Fix recording times of folders analysed with an older version (no re-analysis)
+# Re-reads the DVR clock of every analysed video, corrects all times and rebuilds highlight videos/reports.
+RUN_RETIME = False  #@param {type:"boolean"}
+if RUN_RETIME:
+    from cctv_analysis.retime import retime
+    print(retime(cfg))
 """, hide=True)
 code("""
 #@title Browse any events (SQL filter)
@@ -271,7 +283,7 @@ md("""
 ## Tips & troubleshooting
 * **Too many events?** Lower `MOTION_SENSITIVITY`, add `IGNORE_REGIONS` for TVs/fans/roads, or set `EXTRA = {"require_person_for_event": True}`.
 * **Missed movement?** Raise `MOTION_SENSITIVITY` (0.6–0.7) or `EXTRA = {"min_motion_area": 0.0008}`.
-* **Wrong clock time?** Check Step 4. Supported names include Hikvision `ch01_20261011143000`, Dahua `2026-10-11/…/14.30.00-14.45.00.dav`, `NVR_ch2_main_20261011093015_…`, `11-10-2026_08-00-00`. Otherwise the AI reads the burnt-in DVR clock (when AI descriptions are on), then file time is used.
+* **Wrong clock time?** Check Step 4. Supported names include Hikvision `ch01_20261011143000`, Dahua `2026-10-11/…/14.30.00-14.45.00.dav`, `NVR_ch2_main_20261011093015_…`, `11-10-2026_08-00-00`. Otherwise the burnt-in DVR clock is read by OCR (RapidOCR); container metadata is used only when it agrees with the date in the folder name; file time is the last resort (marked approx). Already analysed with an older version? Run the *Fix recording times* cell.
 * **Same person gets several IDs?** Lower `EXTRA = {"face_match_threshold": 0.38}`; **different people merged?** raise it to 0.48.
 * **Only some days?** `FOLDER_KEYWORDS = "6-oct, 7-oct"`. A folder that doesn't match is listed in the log so you can see why.
 * **Duplicates:** a file whose content was already analysed (same video copied/renamed) is skipped and listed under *Videos* as `duplicate`.
@@ -280,6 +292,8 @@ md("""
 * The score is a triage aid: always confirm by watching the cited clip / original video at the given offset.
 * Face recognition: use only in line with local privacy law and inform customers that CCTV is in use.
 """)
+for i, c in enumerate(C):
+    c["id"] = f"cell-{i:03d}"          # deterministic ids: CI checks the notebook is in sync with the package
 nb.cells = C
 out = os.path.join(ROOT, "cctv-analysis.ipynb")
 nbf.write(nb, out)

@@ -1,3 +1,4 @@
+# runtime (library, CLI, notebook and desktop app)
 ultralytics>=8.3.200
 lap
 opencv-python-headless>=4.8
@@ -8,3 +9,11 @@ transformers>=4.57
 accelerate
 torch
 pillow
+rapidocr-onnxruntime>=1.4      # reads the DVR clock printed on the picture
+fast-plate-ocr>=1.1            # number-plate reader (MIT)
+open-image-models>=0.6         # number-plate detector (MIT)
+requests
+psutil
+cryptography>=42               # licence signatures (Ed25519)
+flask>=3.0                     # desktop app
+waitress>=3.0                  # desktop app web server

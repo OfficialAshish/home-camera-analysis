@@ -65,10 +65,12 @@ class FaceEngine:
             bw, bh = x2 - x1, y2 - y1
             if bw < 12 or bh < 24:
                 continue
-            cx1 = int(max(0, x1 - 0.1 * bw)); cx2 = int(min(W, x2 + 0.1 * bw))
+            cx1 = int(max(0, x1 - 0.1 * bw))
+            cx2 = int(min(W, x2 + 0.1 * bw))
             # full body (tall box): face is in the top half; close-up / partial body: search almost all of it
             frac = 0.5 if bh / max(bw, 1) > 2.0 else 0.9
-            cy1 = int(max(0, y1 - 0.08 * bh)); cy2 = int(min(H, y1 + frac * bh))
+            cy1 = int(max(0, y1 - 0.08 * bh))
+            cy2 = int(min(H, y1 + frac * bh))
             crop = frame[cy1:cy2, cx1:cx2]
             if crop.size == 0:
                 continue
@@ -133,6 +135,55 @@ class FaceEngine:
                      int(max(0, x1 - pad * w)):int(min(W, x2 + pad * w))].copy()
 
 
+def enroll_folder(engine: FaceEngine, folder: str, what: str = "faces") -> List[dict]:
+    """folder/<Name>/*.jpg (or folder/<Name>.jpg) -> [{"name", "emb" (unit vector), "n"}]."""
+    if not folder:
+        return []
+    if not os.path.isdir(folder):
+        log.info("%s folder not found (%s) – continuing without it", what, folder)
+        return []
+    people = []
+    for name in sorted(os.listdir(folder)):
+        d = os.path.join(folder, name)
+        files = [os.path.join(d, f) for f in sorted(os.listdir(d))] if os.path.isdir(d) else [d]
+        label = name if os.path.isdir(d) else os.path.splitext(name)[0]
+        embs = []
+        for f in files:
+            try:
+                img = cv2.imread(f)
+            except Exception:
+                img = None
+            if img is None:
+                log.warning("face image unreadable, skipped: %s", f)
+                continue
+            faces = sorted(engine.detect_full(img), key=lambda x: -x["score"] * (x["box"][2] - x["box"][0]))
+            if faces:
+                e = engine.embed(img, faces[0])
+                if e is not None:
+                    embs.append(e)
+        if embs:
+            c = np.mean(embs, 0)
+            people.append({"name": label, "emb": c / np.linalg.norm(c), "n": len(embs)})
+    log.info("%s: enrolled %d people", what, len(people))
+    return people
+
+
+class Watchlist:
+    """People of interest (face_watchlist_dir). A match raises the 'watchlist_face' flag."""
+
+    def __init__(self, engine: FaceEngine, folder: str, threshold: float):
+        self.thr = threshold
+        self.people = enroll_folder(engine, folder, "Face watchlist")
+
+    def match(self, emb: np.ndarray):
+        best = ("", -1.0)
+        for p in self.people:
+            s = float(np.dot(emb, p["emb"]))
+            if s >= self.thr and s > best[1]:
+                best = (p["name"], s)
+        return best
+
+
 class IdentityDB:
     """Greedy online clustering of face embeddings, persisted between runs so that
     'P0007' means the same person across days. Known people come from
@@ -154,36 +205,8 @@ class IdentityDB:
                 self.ids, self.emb = [], []
 
     def enroll_known(self, engine: FaceEngine, folder: str) -> int:
-        if not folder:
-            return 0
-        if not os.path.isdir(folder):
-            log.info("Known-faces folder not found (%s) – continuing without known people", folder)
-            return 0
-        n = 0
-        for name in sorted(os.listdir(folder)):
-            d = os.path.join(folder, name)
-            files = [os.path.join(d, f) for f in sorted(os.listdir(d))] if os.path.isdir(d) else [d]
-            label = name if os.path.isdir(d) else os.path.splitext(name)[0]
-            embs = []
-            for f in files:
-                try:
-                    img = cv2.imread(f)
-                except Exception:
-                    img = None
-                if img is None:
-                    log.warning("known face image unreadable, skipped: %s", f)
-                    continue
-                faces = sorted(engine.detect_full(img), key=lambda x: -x["score"] * (x["box"][2] - x["box"][0]))
-                if faces:
-                    e = engine.embed(img, faces[0])
-                    if e is not None:
-                        embs.append(e)
-            if embs:
-                c = np.mean(embs, 0)
-                self.known.append({"name": label, "emb": c / np.linalg.norm(c), "n": len(embs)})
-                n += 1
-        log.info("Enrolled %d known people", n)
-        return n
+        self.known = enroll_folder(engine, folder, "Known-faces")
+        return len(self.known)
 
     run_id = ""
     last_new = False
@@ -228,6 +251,15 @@ class IdentityDB:
         self.emb.append(emb)
         return new_id, 1.0, known_name
 
+    def forget_events(self, event_ids) -> None:
+        """Drop references to events that were deleted (video re-analysed)."""
+        gone = set(event_ids)
+        if not gone:
+            return
+        for r in self.ids:
+            if r.get("events"):
+                r["events"] = [e for e in r["events"] if e not in gone]
+
     def set_sample(self, pid: str, path: str):
         for r in self.ids:
             if r["id"] == pid and not r.get("sample"):
@@ -238,3 +270,21 @@ class IdentityDB:
         with open(self.path + ".json", "w") as fh:
             json.dump(self.ids, fh, indent=1)
         np.save(self.path + ".npy", np.stack(self.emb) if self.emb else np.zeros((0, 128), np.float32))
+
+
+def match_identities(engine: FaceEngine, img: np.ndarray, identities_path: str, threshold: float):
+    """Search by photo: [(identity id, similarity)] of stored identities matching the largest face
+    in `img`, best first. Returns None when the photo has no detectable face."""
+    faces = sorted(engine.detect_full(img), key=lambda f: -(f["box"][2] - f["box"][0]))
+    if not faces:
+        return None
+    q = engine.embed(img, faces[0])
+    if q is None or not (os.path.exists(identities_path + ".json") and os.path.exists(identities_path + ".npy")):
+        return []
+    with open(identities_path + ".json") as fh:
+        ids = json.load(fh)
+    emb = np.load(identities_path + ".npy")
+    if len(ids) != len(emb) or not len(emb):
+        return []
+    sims = emb @ q
+    return [(ids[i]["id"], float(sims[i])) for i in np.argsort(-sims) if sims[i] >= threshold]

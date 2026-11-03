@@ -47,6 +47,7 @@ def _quiet_ultralytics():
 
 def load_yolo(candidates: List[str]):
     from ultralytics import YOLO
+
     from . import modelcache
     _quiet_ultralytics()
     last = None

@@ -4,17 +4,16 @@ import os
 import subprocess
 import sys
 
-import numpy as np
-
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from cctv_analysis import rules as R  # noqa: E402
+from cctv_analysis import timeline as T  # noqa: E402
 from cctv_analysis import video_io as V  # noqa: E402
 from cctv_analysis.config import Config  # noqa: E402
-from cctv_analysis.vlm import parse_clock, parse_verdict  # noqa: E402
+from cctv_analysis.vlm import parse_verdict  # noqa: E402
 
-TZ = V._tz("Asia/Kolkata")
+TZ = T.tz("Asia/Kolkata")
 
 
 def test_filename_times():
@@ -26,9 +25,9 @@ def test_filename_times():
         "2026-10-11 21.05.09.mp4": (2026, 10, 11, 21, 5, 9),
     }
     for name, exp in cases.items():
-        d = V.time_from_name(name, "/x", [], TZ)
+        d = T.time_from_name(name, "/x", [], TZ)
         assert d is not None and d.timetuple()[:6] == exp, (name, d)
-    assert V.time_from_name("IMG_1234.mp4", "/x", [], TZ) is None
+    assert T.time_from_name("IMG_1234.mp4", "/x", [], TZ) is None
 
 
 def test_camera_names():
@@ -73,9 +72,9 @@ def test_vlm_parsing():
                       '"category": "theft", "confidence": 0.8, "reason": "concealing"}')
     assert v["suspicious"] is True and v["category"] == "theft" and v["confidence"] == 0.8
     assert parse_verdict("Nothing suspicious, a customer pays.")["suspicious"] is False
-    assert parse_clock("2026-10-11 22:15:50") == dt.datetime(2026, 10, 11, 22, 15, 50)
-    assert parse_clock("11/10/2026 08:01:02") == dt.datetime(2026, 10, 11, 8, 1, 2)
-    assert parse_clock("NONE") is None
+    assert T.parse_clock_text("2026-10-11 22:15:50") == dt.datetime(2026, 10, 11, 22, 15, 50)
+    assert T.parse_clock_text("11/10/2026 08:01:02") == dt.datetime(2026, 10, 11, 8, 1, 2)
+    assert T.parse_clock_text("NONE") is None
 
 
 def test_motion_on_synthetic(tmp_path):
@@ -127,3 +126,24 @@ def test_quick_hash_detects_copies(tmp_path):
     c = tmp_path / "c.mp4"
     c.write_bytes(a.read_bytes()[:-1] + b"x")
     assert V.quick_hash(str(a)) == V.quick_hash(str(b)) != V.quick_hash(str(c))
+
+
+def test_every_encoder_fallback_produces_a_playable_file(tmp_path, monkeypatch):
+    """libx264 is missing from LGPL ffmpeg builds; each fallback must still produce a valid video."""
+    from cctv_analysis import reels
+    src = str(tmp_path / "src.mp4")
+    subprocess.run([sys.executable, os.path.join(ROOT, "tests", "make_synthetic.py"), src], check=True)
+    r = subprocess.run([V.FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True)
+    names = [n for n in ("libx264", "libopenh264", "mpeg4") if f" {n} " in r.stdout]
+    assert "mpeg4" in names
+    cfg = Config(reel_width=640, reel_fps=10)
+    for n in names:
+        monkeypatch.setattr(V, "_ENCODER", {"name": n, "args": {"libx264": ["-c:v", "libx264", "-preset", "veryfast"],
+                                                                "libopenh264": ["-c:v", "libopenh264"],
+                                                                "mpeg4": ["-c:v", "mpeg4"]}[n]})
+        out = str(tmp_path / f"{n}.mp4")
+        e = {"event_id": n, "video_path": src, "start_off": 1.0, "end_off": 4.0}
+        assert reels.encode_segment(e, out, cfg), n
+        m = V.probe(out)
+        assert m["width"] == 640 and 2.5 <= m["duration"] <= 3.5, (n, m)
+        assert m["codec"] == {"libx264": "h264", "libopenh264": "h264", "mpeg4": "mpeg4"}[n]

@@ -46,8 +46,19 @@ CREATE TABLE IF NOT EXISTS face_alerts (
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY, started TEXT, finished TEXT, videos INT, events INT, new_faces INT,
   duplicates INT, notes TEXT);
+CREATE TABLE IF NOT EXISTS plates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, event_id TEXT, track INT, vehicle TEXT, camera TEXT, t_off REAL,
+  dt TEXT, text TEXT, confidence REAL, valid_format INT, n_reads INT, reads TEXT, method TEXT,
+  crop_path TEXT, enhanced_path TEXT, watchlist TEXT);
 CREATE INDEX IF NOT EXISTS ix_ev_video ON events(video_id);
 CREATE INDEX IF NOT EXISTS ix_det_ev ON detections(event_id);
+CREATE INDEX IF NOT EXISTS ix_ev_start ON events(start_dt);
+CREATE INDEX IF NOT EXISTS ix_ev_cam ON events(camera, start_dt);
+CREATE INDEX IF NOT EXISTS ix_tr_ident ON tracks(identity);
+CREATE INDEX IF NOT EXISTS ix_faces_ev ON faces(event_id);
+CREATE INDEX IF NOT EXISTS ix_plates_text ON plates(text);
+CREATE INDEX IF NOT EXISTS ix_plates_ev ON plates(event_id);
+CREATE INDEX IF NOT EXISTS ix_alerts_kind ON face_alerts(kind, run_id);
 """
 
 
@@ -62,11 +73,15 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
         self._migrate()
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ev_run ON events(run_id)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ev_score ON events(score DESC, start_dt)")
         self.db.commit()
 
     # columns added in later versions – keeps databases from older runs working
     _ADDED = {"videos": {"qhash": "TEXT", "duplicate_of": "TEXT", "run_id": "TEXT"},
-              "events": {"run_id": "TEXT"}}
+              "events": {"run_id": "TEXT", "time_source": "TEXT", "luma_p99": "REAL", "plates": "TEXT",
+                         "crossings": "TEXT"},
+              "tracks": {"watchlist": "TEXT", "crossings": "TEXT"}}
 
     def _migrate(self):
         for table, cols in self._ADDED.items():
@@ -117,6 +132,8 @@ class Store:
         r = self.db.execute("SELECT status, fingerprint FROM videos WHERE path=?", (path,)).fetchone()
         return bool(r and r["status"] == "done" and r["fingerprint"] == fingerprint)
 
+    purged_events: List[str] = []
+
     def start_video(self, row: dict) -> int:
         old = self.db.execute("SELECT id FROM videos WHERE path=?", (row["path"],)).fetchone()
         if old:
@@ -129,12 +146,15 @@ class Store:
         self.db.commit()
         return vid
 
-    def purge_video(self, vid: int):
+    def purge_video(self, vid: int) -> List[str]:
+        """Remove everything derived from one video (before re-analysing it); returns the event ids."""
         evs = [r["event_id"] for r in self.query("SELECT event_id FROM events WHERE video_id=?", (vid,))]
-        for t in ("tracks", "faces", "detections"):
+        for t in ("tracks", "faces", "detections", "plates", "face_alerts", "reel_segments"):
             self.db.executemany(f"DELETE FROM {t} WHERE event_id=?", [(e,) for e in evs])
         self.db.execute("DELETE FROM events WHERE video_id=?", (vid,))
         self.db.execute("DELETE FROM tamper WHERE video_id=?", (vid,))
+        self.purged_events = evs
+        return evs
 
     def update_video(self, vid: int, **kw):
         sets = ",".join(f"{k}=?" for k in kw)

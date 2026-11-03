@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="cctv-token" content="{{TOKEN}}">
+<title>CCTV Analysis</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <div class="brand">CCTV Analysis <span class="ver">v{{VERSION}}</span></div>
+  <nav id="tabs">
+    <button data-tab="setup" class="on">1 · Set up</button>
+    <button data-tab="progress">2 · Progress</button>
+    <button data-tab="results">Results</button>
+    <button data-tab="highlights">Highlights</button>
+    <button data-tab="plates">Number plates</button>
+    <button data-tab="faces">Faces</button>
+    <button data-tab="export">Export evidence</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <div id="licbadge" class="badge"></div>
+</header>
+<div id="toast" class="toast hidden"></div>
+<main>
+  <!-- ============================== SETUP -->
+  <section id="tab-setup" class="tab on">
+    <div class="card">
+      <h2>Recordings</h2>
+      <label>Folder with CCTV recordings</label>
+      <div class="row"><input id="in-dir" type="text" placeholder="e.g. D:\CCTV\Shop"><button id="in-browse">Browse…</button></div>
+      <label>Save results to</label>
+      <div class="row"><input id="out-dir" type="text" placeholder="e.g. D:\CCTV_Results"><button id="out-browse">Browse…</button></div>
+      <p class="hint">Results are saved here: highlight videos (highlights/YEAR/MONTH/), Excel reports, an HTML report, snapshots and evidence exports.</p>
+    </div>
+    <div class="card">
+      <h2>What should be analysed?</h2>
+      <label>Speed</label>
+      <select id="preset"></select>
+      <div id="feature-form"></div>
+    </div>
+    <div class="card">
+      <h2>Check this computer &amp; estimate time</h2>
+      <div class="row">
+        <button id="btn-check">Check computer</button>
+        <button id="btn-scan">Scan recordings</button>
+        <button id="btn-bench" title="Measures this computer's real speed on one of your videos (about a minute)">Measure speed (1 min)</button>
+        <button id="btn-estimate">Estimate time</button>
+      </div>
+      <div id="check-out"></div>
+      <div id="scan-out"></div>
+      <div id="est-out"></div>
+    </div>
+    <div class="card start">
+      <button id="btn-start" class="primary big">▶ Start analysis</button>
+      <span id="start-msg" class="hint"></span>
+    </div>
+  </section>
+
+  <!-- ============================== PROGRESS -->
+  <section id="tab-progress" class="tab">
+    <div class="card">
+      <h2>Progress</h2>
+      <div id="job-none" class="hint">No analysis running. Start one from “Set up”.</div>
+      <div id="job-box" class="hidden">
+        <div class="bar"><div id="job-bar"></div></div>
+        <div class="row spread"><span id="job-stage"></span><span id="job-eta"></span></div>
+        <div id="job-file" class="mono small"></div>
+        <div class="row"><button id="btn-cancel" class="danger">Stop</button><button id="btn-open-results">Open results</button></div>
+        <h3>Log</h3>
+        <pre id="job-log"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================== RESULTS -->
+  <section id="tab-results" class="tab">
+    <div class="card">
+      <div class="row"><label class="inline">Results folder</label><select id="res-out"></select><button id="res-browse">Browse…</button><button id="res-load">Open</button><span class="grow"></span><button id="res-retime" title="Re-read the recording times (DVR clock) of this folder and rebuild highlights – use for folders analysed with an older version">Fix recording times</button></div>
+      <div id="kpis" class="kpis"></div>
+    </div>
+    <div class="card">
+      <div class="filters">
+        <label>From <input id="f-from" type="date"></label>
+        <label>To <input id="f-to" type="date"></label>
+        <label>Camera <select id="f-cam"><option value="">all</option></select></label>
+        <span class="levels">
+          <label><input type="checkbox" class="f-lv" value="HIGH" checked> HIGH</label>
+          <label><input type="checkbox" class="f-lv" value="REVIEW" checked> REVIEW</label>
+          <label><input type="checkbox" class="f-lv" value="LOW"> LOW</label>
+          <label><input type="checkbox" class="f-lv" value="NORMAL"> NORMAL</label>
+        </span>
+        <label><input id="f-people" type="checkbox"> people only</label>
+        <label>Review <select id="f-review"><option value="">any</option></select></label>
+        <label>Search <input id="f-q" type="search" placeholder="running, bag, theft…"></label>
+        <label>Person <input id="f-person" size="7" placeholder="P0003"></label>
+        <label>Plate <input id="f-plate" size="10" placeholder="MH12AB1234"></label>
+        <label>Sort <select id="f-sort"><option value="time">time</option><option value="score">score</option></select></label>
+        <button id="f-go" class="primary">Show</button>
+      </div>
+      <div id="ev-count" class="hint"></div>
+      <div id="ev-list" class="evlist"></div>
+      <div class="row"><button id="ev-prev">‹ Previous</button><button id="ev-next">Next ›</button></div>
+    </div>
+    <div id="ev-detail" class="card hidden"></div>
+  </section>
+
+  <!-- ============================== HIGHLIGHTS -->
+  <section id="tab-highlights" class="tab">
+    <div class="card"><div class="row"><label class="inline">Day</label><select id="hl-day"></select></div>
+      <video id="hl-video" controls preload="metadata"></video>
+      <p class="hint">Click a line to jump to that movement in the video.</p>
+      <div id="hl-index" class="index"></div>
+    </div>
+  </section>
+
+  <!-- ============================== PLATES -->
+  <section id="tab-plates" class="tab">
+    <div class="card"><div class="row"><input id="pl-q" placeholder="plate, part of a plate, or blank for all"><label class="inline">tolerance <select id="pl-edits"><option>0</option><option selected>1</option><option>2</option></select></label><button id="pl-go" class="primary">Search</button></div>
+      <div id="pl-list" class="grid"></div></div>
+  </section>
+
+  <!-- ============================== FACES -->
+  <section id="tab-faces" class="tab">
+    <div class="card"><h2>Search by photo</h2><p class="hint">Choose a photo of a person's face: every appearance of that person is listed.</p>
+      <div class="row"><input id="fs-photo" type="file" accept="image/jpeg,image/png"><button id="fs-go" class="primary">Find this person</button></div>
+      <div id="fs-out"></div></div>
+    <div class="card"><p class="hint">Each card is one person (grouped by face). Yellow = first seen in the latest run.</p><div id="fa-list" class="grid"></div></div>
+  </section>
+
+  <!-- ============================== EXPORT -->
+  <section id="tab-export" class="tab">
+    <div class="card">
+      <h2>Evidence package</h2>
+      <p class="hint">Add events with “Add to evidence” on an event. The package contains the original recording segment (not re-encoded), snapshots, crops, an incident report and SHA-256 hashes of every file and of the source recordings.</p>
+      <div id="ex-list"></div>
+      <div class="formgrid">
+        <label>Case / reference <input id="ex-case" placeholder="FIR-123/2026"></label>
+        <label>Operator <input id="ex-operator" placeholder="your name"></label>
+        <label class="wide">Notes <textarea id="ex-notes" rows="2"></textarea></label>
+        <label><input id="ex-redact" type="checkbox"> blur faces (for sharing; leaves out the unblurred original)</label>
+        <label><input id="ex-redact-plates" type="checkbox"> also blur number plates</label>
+      </div>
+      <div class="row"><button id="ex-go" class="primary">Create package</button><button id="ex-clear">Clear list</button></div>
+      <div id="ex-out"></div>
+    </div>
+    <div class="card"><h2>Audit log</h2><div id="audit-out"></div><button id="audit-load">Show audit log</button></div>
+  </section>
+
+  <!-- ============================== SETTINGS -->
+  <section id="tab-settings" class="tab">
+    <div class="card"><h2>Licence</h2><div id="lic-out"></div>
+      <label>Paste licence key</label><textarea id="lic-key" rows="3"></textarea>
+      <button id="lic-go" class="primary">Activate</button></div>
+    <div class="card"><h2>AI model server (optional)</h2>
+      <p class="hint">Use a model already running on this PC or your network (Ollama, LM Studio, vLLM, llama.cpp) through its OpenAI-compatible address. Choose “openai” as “AI model runs in” on the Set up page.</p>
+      <div class="formgrid">
+        <label>Server address <input id="vlm-url" placeholder="http://127.0.0.1:11434/v1"></label>
+        <label>API key (if the server needs one) <input id="vlm-key" type="password" autocomplete="off"></label>
+      </div>
+      <div class="row"><button id="vlm-save">Save key</button><button id="vlm-test">Test connection</button></div>
+      <div id="vlm-out"></div></div>
+    <div class="card"><h2>Models</h2><div id="models-out"></div></div>
+    <div class="card"><h2>Operator</h2><div class="row"><input id="op-name" placeholder="name shown in reviews and exports"><button id="op-save">Save</button></div></div>
+  </section>
+</main>
+
+<!-- folder browser -->
+<div id="fb" class="modal hidden">
+  <div class="modal-box">
+    <div class="row spread"><b>Choose a folder</b><button id="fb-close">✕</button></div>
+    <div class="row"><input id="fb-path" type="text"><button id="fb-up">↑ Up</button><button id="fb-native">System dialog…</button></div>
+    <div id="fb-roots" class="row small"></div>
+    <div id="fb-info" class="hint"></div>
+    <div id="fb-list" class="fblist"></div>
+    <div class="row"><input id="fb-new" placeholder="new folder name"><button id="fb-mk">Create</button><span class="grow"></span><button id="fb-ok" class="primary">Use this folder</button></div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
