@@ -220,7 +220,7 @@ def osd_bands(frame) -> list:
     import cv2
     h, w = frame.shape[:2]
     out = []
-    for y0, y1 in ((0, int(h * 0.2)), (int(h * 0.8), h)):
+    for y0, y1 in ((0, int(h * 0.35)), (int(h * 0.65), h)):
         band = frame[y0:y1]
         if band.size == 0:
             continue
