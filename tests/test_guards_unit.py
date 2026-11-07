@@ -75,3 +75,23 @@ def test_case_run_progress_is_the_overall_percent_not_one_source_s():
     single = Job("analysis")
     single.update({"stage": "video", "index": 2, "total": 2})                 # a single-folder run is unchanged
     assert single.progress["percent"] == 47.5
+
+
+def test_every_setup_field_is_a_config_field_with_a_valid_default():
+    """One name, one meaning: the Set up form is rendered from features.FIELDS and its values go
+    straight into Config – a key that is not a Config field (or a default outside its own range /
+    choices) would be silently dropped or rejected only when the officer presses Start."""
+    from dataclasses import fields
+
+    from cctv_analysis.app import features
+    names = {f.name for f in fields(Config)}
+    assert [k for k, *_ in features.FIELDS if k not in names] == []
+    for f in features.describe()["fields"]:
+        t, v = f["type"], f["default"]
+        if t.startswith("range:"):
+            lo, hi, _ = (float(x) for x in t.split(":")[1:])
+            assert lo <= v <= hi, f
+        elif t.startswith("choice:"):
+            assert v in t.split(":", 1)[1].split(","), f
+    cfg = Config.from_dict({f["key"]: f["default"] for f in features.describe()["fields"]})
+    assert cfg.validate() == []

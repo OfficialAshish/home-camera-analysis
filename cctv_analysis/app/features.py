@@ -26,6 +26,8 @@ FIELDS = [
      "Motion-deblurs and fuses several frames of hard plates; saves the enhanced image. Much slower.", "high"),
     ("plate_vlm_read", "Ask the AI model when a plate is unreadable", "Number plates", "bool",
      "Uses the AI description model (below) as a last resort.", "high"),
+    ("plate_min_confidence", "Confidence needed to report a plate", "Number plates", "range:0.3:0.95:0.05",
+     "Below this the plate is shown as \u201cnot read\u201d with the machine's guess, for you to check and type.", "none"),
     ("plate_watchlist", "Plate watchlist (comma separated)", "Number plates", "list",
      "Alert when one of these plates is seen (1 character tolerance).", "none"),
     ("make_highlight_reel", "Daily highlight videos", "Highlights & outputs", "bool",

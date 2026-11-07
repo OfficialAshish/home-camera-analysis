@@ -11,7 +11,7 @@ Status: **current** · Code: `cctv_analysis/plates.py` · Tests: `tests/test_pla
 | `plate_watchlist` | Plate watchlist | – | alert `watchlist_plate` (+50) on a match within `plate_watchlist_max_edits` (1) |
 | `plate_region` | – | `IN` | Indian formats (state + RTO + series + 4 digits, BH series); `any` disables format rules |
 | `plate_reads_per_track` | – | 6 | best observations re-read per vehicle track |
-| `plate_min_confidence` | – | 0.6 | a fused read below this is **not read** (the plate stays empty; the machine's guess is kept separately) |
+| `plate_min_confidence` | Confidence needed to report a plate | 0.6 | a fused read below this is **not read** (the plate stays empty; the machine's guess is kept separately) |
 
 ## How a plate is read
 1. During detection every vehicle track keeps its best observations (confidence × size × sharpness).
