@@ -154,6 +154,32 @@ changes nothing on disk.
 per-source `apply_limits` hook was removed so the limit has one meaning ("videos per job").
 
 ## D23 — Offer the system folder dialog only where it can open
-*Decision.* `server.native_dialog()` (tkinter importable, and a display on Linux) is reported by
-`/api/fs/roots`; the UI goes straight to the built-in folder browser otherwise and `/api/fs/pick`
-answers 501 without starting a helper process.
+*Decision.* `server.native_dialog()` (Windows always – the Windows folder dialog through
+PowerShell/WinForms needs no tkinter; elsewhere tkinter importable and a display on Linux) is
+reported by `/api/fs/roots`; the UI shows *Windows folder dialog…* only then, goes straight to the
+built-in folder browser otherwise, and `/api/fs/pick` answers 501 without starting a helper
+process. The helper's dialog has an invisible, top-most, non-minimised owner window (a minimised
+owner kept it out of sight) and the app waits for the officer up to an hour.
+
+## D24 — An uncertain plate read is "not read"; the examiner's reading counts, next to the machine's
+*Context.* Reported: plate readings were too vague (a valid format was reported at any confidence,
+partial reads were listed). *Decision.* A fused read is the plate only at `plate_min_confidence`
+(0.6, measured: `docs/PLATES.md`) and as a whole plate; otherwise the plate is empty and the
+machine's guess is kept separately (`ocr_text`). An examiner's reading lives in `reviews.db` (the
+analyzer replaces `analysis.db`), is audited with the machine read, and counts wherever a plate is
+searched or reported – always shown beside the machine read, never merged into it. *Why not a
+lower limit?* A correct deblurred read at 0.57 is lost to automatic reporting; it is shown as the
+guess and the examiner confirms it – the request was "if not confident, nothing".
+
+## D25 — The face mode is chosen before the run and decides all face work
+*Decision.* `investigation.FACE_MODES` (off / detect / unique / reference) and `face_options` are
+the only mapping to Config; a run's `faces` overrides whatever face options a client sends.
+Reference photos are copied into the case and hashed into the audit log (what a face search looked
+for is part of the record). The recogniser is loaded lazily so *detect* never loads it.
+
+## D26 — Super-resolution is classical multi-frame fusion, computed bit-exactly
+*Decision.* `enhance.super_resolve`: the region is followed by normalised cross-correlation,
+registered with sub-pixel ECC at the enlarged size and median-fused – no learned model, so it
+cannot invent a character that is in no frame. Every float filter on the alignment path was
+replaced by an integer / 8-bit bit-exact one: OpenCV's float SIMD paths differ in the last bit
+with buffer alignment, and a saved still must reproduce from the recording bit for bit.

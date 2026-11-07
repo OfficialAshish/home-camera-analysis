@@ -34,28 +34,28 @@ all fail is marked `error`; the same error on 3 videos in a row stops the run.
 | `ocr.py` | OCR providers (RapidOCR, Tesseract, VLM) |
 | `motion.py` | pass 1 |
 | `detector.py` | YOLO detection/tracking, pose, posture cues |
-| `faces.py` | YuNet/SFace, quality, identity DB, known faces, watchlist |
+| `faces.py` | YuNet/SFace (SFace loaded only when a face is compared), quality, identity DB, known faces, watchlist |
 | `plates.py` | plate localisation, OCR, deblur, fusion, format fit, voting, watchlist matching |
 | `semantic.py` | SigLIP-2 tags and text search |
-| `vlm.py` | VLM providers (transformers, OpenAI-compatible) |
+| `vlm.py` | VLM providers (transformers, OpenAI-compatible, NVIDIA) and the fallback chain (`ChainVLM`), *Test* probe |
 | `rules.py` | explainable score, event levels (`LEVELS`), zones, counting lines |
 | `storage.py` | SQLite (working copy on fast disk, synced to the output folder); `resolve`/`rel_to` for stored paths of a moved folder |
-| `reviews.py`, `audit.py` | review decisions, hash-chained audit log |
+| `reviews.py`, `audit.py` | review decisions and examiners' plate readings, hash-chained audit log |
 | `reels.py`, `report.py` | highlight reels, Excel/HTML/charts |
 | `retime.py` | fix times of analysed folders in place |
 | `evidence.py` | evidence packages, redaction, verification |
 | `sysinfo.py` | system check, model inventory/download, benchmark, estimate |
 | `licensing.py` | offline licences |
-| `cases.py` | cases, sources, device particulars, clock corrections, calibrated time, case audit log |
+| `cases.py` | cases, sources, device particulars, clock corrections, calibrated time, reference persons' photos, case audit log |
 | `ingest.py` | acquisition SHA-256 of seized files, lossless MP4 playback remuxes (checked by packet count) |
-| `investigation.py` | runs a case: ingest → analysis → appearance index, per source |
+| `investigation.py` | runs a case: ingest → analysis → appearance index, per source; the face modes (`FACE_MODES`, `face_options`) |
 | `journey.py` | cross-camera timeline, sightings (face, plate, appearance, curated list), journey, highlight reel |
 | `reid.py` | person appearance vectors (built-in; optional ONNX model), index, cross-camera search |
-| `enhance.py` | Forensic Studio filters, multi-frame stacking, reproducible enhancement records |
+| `enhance.py` | Forensic Studio filters, multi-frame stacking, multi-frame super-resolution of a region, reproducible enhancement records |
 | `section63.py` | Section 63 BSA 2023 certificate (PDF/HTML) and the case evidence bundle |
 | `merkle.py` | RFC 6962 SHA-256 Merkle tree over evidence hashes |
 | `resources.py` | memory governor: smaller batches above 85 % RAM, waits above 93 % |
-| `app/server.py` | web server, guards, single-folder endpoints; registers `app/case_api.py` (case endpoints) |
+| `app/server.py` | web server, guards, single-folder endpoints; registers `app/case_api.py` (case endpoints) and `app/ai_providers.py` (Settings › AI model providers) |
 | `app/common.py` | request helpers shared by the endpoint modules (`ApiError`, `abs_dir`, `inside`) |
 | `app/jobs.py`, `app/results.py`, `app/features.py` | background jobs, results queries, setup-form fields |
 | `app/static/` | UI: `index.html`, `app.js` (helpers, single-folder screens), `case.js` (case screens), `app.css` |
