@@ -43,9 +43,14 @@ class Semantic:
 
     def encode_images(self, images_bgr: List[np.ndarray], batch: int = 16) -> np.ndarray:
         from PIL import Image
+
+        from .resources import governor
         outs = []
-        for i in range(0, len(images_bgr), batch):
-            ims = [Image.fromarray(im[:, :, ::-1]) for im in images_bgr[i:i + batch]]
+        i = 0
+        while i < len(images_bgr):
+            n = governor().batch_size(batch)           # smaller batches when RAM is above 85 %
+            ims = [Image.fromarray(im[:, :, ::-1]) for im in images_bgr[i:i + n]]
+            i += n
             with self.torch.no_grad():
                 x = self.proc(images=ims, return_tensors="pt").to(self.device)
                 x = {k: (v.to(self.dtype) if v.dtype.is_floating_point else v) for k, v in x.items()}

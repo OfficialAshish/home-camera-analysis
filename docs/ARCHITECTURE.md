@@ -46,7 +46,21 @@ all fail is marked `error`; the same error on 3 videos in a row stops the run.
 | `evidence.py` | evidence packages, redaction, verification |
 | `sysinfo.py` | system check, model inventory/download, benchmark, estimate |
 | `licensing.py` | offline licences |
+| `cases.py` | cases, sources, device particulars, clock corrections, calibrated time, case audit log |
+| `ingest.py` | acquisition SHA-256 of seized files, lossless MP4 playback remuxes (checked by packet count) |
+| `investigation.py` | runs a case: ingest → analysis → appearance index, per source |
+| `journey.py` | cross-camera timeline, sightings (face, plate, appearance, curated list), journey, highlight reel |
+| `reid.py` | person appearance vectors (built-in; optional ONNX model), index, cross-camera search |
+| `enhance.py` | Forensic Studio filters, multi-frame stacking, reproducible enhancement records |
+| `section63.py` | Section 63 BSA 2023 certificate (PDF/HTML) and the case evidence bundle |
+| `merkle.py` | RFC 6962 SHA-256 Merkle tree over evidence hashes |
+| `resources.py` | memory governor: smaller batches above 85 % RAM, waits above 93 % |
 | `app/` | web server, jobs, results queries, UI |
+
+## Cases
+A case runs the pipeline once per seized source, each into `<case>/sources/<id>/` (an ordinary
+output folder), so per-source views, reports and exports are unchanged; `journey.py` and `reid.py`
+query across those folders on calibrated time. Layout and rules: `docs/CASES.md`.
 
 ## Storage
 `<output>/analysis.db` (SQLite) is the source of truth for analysis results, written by the

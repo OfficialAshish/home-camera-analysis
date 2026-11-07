@@ -3,8 +3,8 @@
 ``export_evidence`` writes one ZIP containing, per selected event:
 
 * ``original_segment.<ext>`` – the event cut from the source recording by **stream copy**
-  (no re-encoding: picture data identical to the recording; the cut can start up to one
-  keyframe early, which is recorded in event.json),
+  (no re-encoding: picture data identical to the recording; the cut starts at a keyframe, so it
+  can begin a few seconds before the event, which is recorded in event.json),
 * the event clip, raw + annotated snapshots, contact sheet, face / person / plate crops,
 * ``event.json`` – times, time source, camera, source file + offsets, flags with reasons, AI
   description, plates, identities,
@@ -58,9 +58,14 @@ def sha256_file(path: str, chunk: int = 4 << 20) -> str:
 def _cut_original(src: str, start: float, end: float, out: str) -> bool:
     if not V.FFMPEG:
         return False
-    r = subprocess.run([V.FFMPEG, "-nostdin", "-y", "-v", "error", "-ss", f"{max(0.0, start):.3f}",
-                        *V._input_args(src), "-i", src, "-t", f"{max(0.5, end - start):.3f}", "-map", "0",
-                        "-c", "copy", "-avoid_negative_ts", "make_zero", out], capture_output=True, timeout=1800)
+    if V.is_raw(src):
+        # a copy cut of a raw stream starts at the first keyframe AFTER the seek point: start early
+        # so the cut covers the whole event (DVR GOPs are 1-2 s; 3 s leaves a margin)
+        start = max(0.0, start - 3.0)
+    pre, post = V.seek_args(src, start, copy=True)          # always the original, never a proxy
+    r = subprocess.run([V.FFMPEG, "-nostdin", "-y", "-v", "error", *pre, *V._input_args(src), "-i", src, *post,
+                        "-t", f"{max(0.5, end - start):.3f}", "-map", "0", "-c", "copy", "-avoid_negative_ts",
+                        "make_zero", out], capture_output=True, timeout=1800)
     return r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
 
 
@@ -206,8 +211,8 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
             if not redact and os.path.exists(src):
                 ext = os.path.splitext(src)[1] or ".mp4"
                 if _cut_original(src, e["start_off"], e["end_off"], os.path.join(d, "original_segment" + ext)):
-                    note["original_segment"] = ("stream copy of the recording (not re-encoded); it may begin up to "
-                                                "one keyframe before the event start")
+                    note["original_segment"] = ("stream copy of the recording (not re-encoded); it may begin "
+                                                "a few seconds before the event start (keyframe boundary)")
             images = []
 
             def put(path, name, d=d):

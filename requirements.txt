@@ -17,3 +17,4 @@ psutil
 cryptography>=42               # licence signatures (Ed25519)
 flask>=3.0                     # desktop app
 waitress>=3.0                  # desktop app web server
+reportlab>=4.0                 # Section 63 certificate PDF (BSD)

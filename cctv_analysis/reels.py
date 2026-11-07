@@ -72,8 +72,10 @@ def _encode_clean(e: dict, out: str, cfg, dur: float) -> bool:
     W, H = _size(cfg)
     vf = (f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,"
           f"setsar=1,fps={int(cfg.reel_fps)}")
-    cmd = [V.FFMPEG, "-nostdin", "-y", "-v", "error", "-ss", f"{max(0.0, e['start_off']):.3f}",
-           *V._input_args(e["video_path"]), "-i", e["video_path"], "-t", f"{max(0.5, dur):.3f}", "-map", "0:v:0",
+    src = V.decode_path(e["video_path"])
+    pre, post = V.seek_args(src, e["start_off"])
+    cmd = [V.FFMPEG, "-nostdin", "-y", "-v", "error", *pre, *V._input_args(src), "-i", src, *post,
+           "-t", f"{max(0.5, dur):.3f}", "-map", "0:v:0",
            "-an", "-sn", "-vf", vf, *V.h264_args(23), "-video_track_timescale", "15360", out]
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
     if r.returncode != 0:

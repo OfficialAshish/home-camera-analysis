@@ -6,3 +6,5 @@ nbclient
 ipykernel
 playwright>=1.45
 pyinstaller>=6.5
+pypdf>=4                      # tests read the generated Section 63 PDF
+onnx>=1.16                     # tests export a small re-ID model to ONNX

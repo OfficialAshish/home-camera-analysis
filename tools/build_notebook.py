@@ -1,5 +1,6 @@
 """Generates cctv-analysis.ipynb from the package sources (single source of truth)."""
 import os
+import re
 
 import nbformat as nbf
 
@@ -67,9 +68,18 @@ md("""
 The next cells write the `cctv_analysis` package to `/content` (same code as the GitHub repo, so the notebook is fully self-contained).
 You don't need to read or edit them — collapse the section and move on.
 """)
-order = ["__init__", "config", "modelcache", "video_io", "ocr", "timeline", "motion", "detector", "faces", "semantic",
-         "vlm", "plates", "rules", "annotate", "storage", "reviews", "audit", "reels", "report", "pipeline", "retime",
-         "evidence", "sysinfo", "helpers", "__main__"]
+order = ["__init__", "config", "modelcache", "video_io", "ocr", "timeline", "motion", "detector", "faces",
+         "resources", "semantic", "vlm", "plates", "rules", "annotate", "storage", "reviews", "audit", "reels", "report",
+         "pipeline", "retime", "evidence", "sysinfo", "helpers", "__main__"]
+# Every package module an embedded module imports must be embedded too, or the notebook breaks at import time
+# (semantic.py importing resources.py once nearly shipped without it).
+for name in order:
+    text = open(os.path.join(ROOT, "cctv_analysis", name + ".py"), encoding="utf-8").read()
+    for a, b in re.findall(r"^\s*from \.(\w*) import ([\w, ()]+)", text, re.M):
+        deps = [a] if a else [x.strip() for x in b.strip("()").split(",") if x.strip()]
+        for dep in deps:
+            if os.path.exists(os.path.join(ROOT, "cctv_analysis", dep + ".py")) and dep not in order:
+                raise SystemExit(f"notebook: {name}.py imports cctv_analysis.{dep}, which is not embedded – add it to 'order'")
 for name in order:
     src = open(os.path.join(ROOT, "cctv_analysis", name + ".py"), encoding="utf-8").read()
     code(f"%%writefile /content/cctv_analysis/{name}.py\n" + src)

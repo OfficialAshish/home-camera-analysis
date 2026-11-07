@@ -85,3 +85,40 @@ ffmpeg so the distributed app does not contain GPL x264 (see `docs/COMMERCIAL-RE
 Track counts over-count people (ByteTrack splits identities; measured 96 tracks on a clip with
 roughly a dozen people). The Footfall sheet labels track counts as an upper bound and uses
 counting-line crossings (`count_lines`) as the footfall figure.
+
+## D14 — A case analyses each seized source into its own output folder
+*Context.* An investigation brings 10–20 unrelated DVR exports. Folding them into one analysis
+would mix camera names, file-relative paths and clocks of different devices.
+*Decision.* `cases.py`/`investigation.py` run the ordinary pipeline once per source into
+`<case>/sources/<id>/`; cross-source questions (timeline, sightings, appearance search, journey,
+certificate) are answered by reading those folders. *Consequence.* Every existing per-folder view,
+report and export keeps working per source; the pipeline is unchanged by cases.
+
+## D15 — Clock corrections never edit recorded times
+*Decision.* The officer's correction is stored per source (and optionally per camera) in
+`case.json`; calibrated time = DVR time + correction is computed when shown. Both times appear
+everywhere; the change is audited and immediate. *Why.* The DVR's own time is part of the record
+(it is what the picture shows); rewriting it would make the evidence disagree with the footage.
+
+## D16 — Appearance search uses a built-in descriptor; a learned model is optional
+*Decision.* `reid.py` ships a colour/texture/shape descriptor (OpenCV/NumPy). Any OSNet/FastReID
+ONNX export can be added at `<models>/reid/reid.onnx` and is blended in. *Why.* Public re-ID
+weights are trained on research-only datasets (MSMT17, Market-1501); bundling them would put a
+licence problem into a product sold to government. The built-in descriptor is measured
+(docs/REID.md) and its limits are stated.
+
+## D17 — Raw `.264/.265` streams are timed by their frames and decoded through their remux
+*Context.* They have no duration, index or timestamps (probe returned 0 s; every seek returned the
+first frame). *Decision.* Duration from packet count ÷ decoder frame rate; output-side seeking;
+in case runs decode the lossless remux (identical frames) via `video_io.register_proxy`; hashes
+and evidence cuts always use the original; copy cuts of raw streams start 3 s early.
+
+## D18 — The certificate is generated, the declaration is not
+*Decision.* `section63.py` fills in everything the software knows (case, devices, tick boxes,
+algorithm, the hash report, acquisition hashes, Merkle root) and leaves signatures – and names,
+addresses and places unless typed by the officer – as blank lines. The statutory wording follows
+the Schedule of the Bharatiya Sakshya (Second) Bill, 2023 as enacted (source and hash in
+`docs/legal/BSA-2023-SECTION-63.md`); the Gazette text could not be retrieved and must be compared
+by the legal cell (UNVERIFIED). *Why.* A Section 63 certificate is a statement by a person; the
+tool must not put words in a declarant's mouth.
+

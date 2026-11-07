@@ -1,7 +1,8 @@
 # Recording times, ordering and highlight reels
 
-Status: **current** · Code: `timeline.py`, `pipeline.py` (plan / event clock), `reels.py`, `retime.py`
-Tests: `tests/test_timeline.py`, `tests/test_pipeline_e2e.py`
+Status: **current** · Code: `timeline.py`, `pipeline.py` (plan / event clock), `reels.py`, `retime.py`,
+`video_io.py` (raw streams), `cases.py` (clock calibration)
+Tests: `tests/test_timeline.py`, `tests/test_pipeline_e2e.py`, `tests/test_multi_folder_ingest.py`
 
 ## The reported defect (root cause)
 Highlight reel `2026-11-01_highlights.mp4` showed at 3:31 a DVR clock of 05:38:27, at 3:41
@@ -55,3 +56,26 @@ group with the earliest reading); more than one group marks the file *discontinu
 times* in the app / notebook). Re-resolves times, re-reads every event's clock, recomputes all
 stored timestamps from their offsets, rebuilds reels/weekly workbooks of affected days and deletes
 those that no longer have events. IDs and event folders keep their names.
+
+## Raw `.264` / `.265` DVR dumps (fixed 2026-11-07)
+Raw elementary streams have no container duration, no index and no timestamps. Before the fix
+`probe()` returned **0 s** for them, so the analyzer refused them as unreadable, and every seek
+(`-ss` before `-i`) returned the first frame: the clock read the same time at every offset.
+Now:
+* duration = video packets (counted without decoding) ÷ the frame rate the decoder uses
+  (timestamps of the first frames: the stream's own timing, else ffmpeg's 25 fps default);
+* seeking in a raw stream happens after decoding (`-ss` after `-i`): exact, but it decodes from
+  the start, so in a case run the lossless MP4 remux of the stream (same packets, same timing) is
+  decoded instead (`video_io.register_proxy`); hashes and evidence cuts always use the original;
+* a stream-copy cut of a raw stream starts 3 s early, because it can only begin at a keyframe after
+  the seek point (`evidence._cut_original`).
+Evidence: `tests/test_multi_folder_ingest.py::test_raw_h264_stream_without_timestamps_is_timed_by_its_frames`
+(10 fps raw stream: 60 frames, 6.0 s; seeking reaches a different frame) and the case run with a
+raw `.264` source whose clock is read correctly at every offset.
+
+## Clock calibration across sources (cases)
+DVRs of different shops disagree by minutes or hours. In a case (`docs/CASES.md`) each source – or
+one camera of it – has a clock correction typed by the officer (`-00:11:00` = this DVR runs
+11 minutes fast). Recorded (DVR) times are never changed: case views show the DVR time and the
+calibrated time (DVR time + correction) side by side and sort by the calibrated time. Changing a
+correction is written to the case audit log and applies at once, without re-analysis.

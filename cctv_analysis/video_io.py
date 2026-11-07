@@ -149,6 +149,39 @@ def file_fingerprint(path: str) -> str:
 
 # ------------------------------------------------------------------- probing
 
+# Raw elementary streams have no index or timestamps: ffmpeg cannot seek in them before decoding.
+RAW_FORMATS = ("h264", "hevc")
+# original path -> lossless MP4 remux of it (same packets, same timing; cctv_analysis.ingest). Frame
+# reading decodes the proxy, which can seek; hashes and evidence cuts always use the original.
+_PROXY: dict = {}
+
+
+def register_proxy(original: str, proxy: str) -> None:
+    if proxy and os.path.isfile(proxy):
+        _PROXY[os.path.abspath(original)] = proxy
+
+
+def decode_path(path: str) -> str:
+    return _PROXY.get(os.path.abspath(path), path)
+
+
+def is_raw(path: str) -> bool:
+    a = _input_args(path)
+    return bool(a) and a[1] in RAW_FORMATS
+
+
+def seek_args(path: str, t: float, copy: bool = False, fps: float = 0.0):
+    """(arguments before -i, arguments after -i) that start reading at `t` seconds.
+    Containers seek on input (fast, and exact with decoding); raw streams cannot, so they seek on
+    output (decode and discard up to t – exact, slower); a stream copy of a raw stream also needs
+    generated timestamps (-fflags +genpts -r <fps>) or nothing could be cut."""
+    t = max(0.0, float(t))
+    if not is_raw(path):
+        return (["-ss", f"{t:.3f}"] if t > 0 else []), []
+    pre = ["-fflags", "+genpts", "-r", f"{fps or probe(path)['fps'] or 25:g}"] if copy else []
+    return pre, (["-ss", f"{t:.3f}"] if t > 0 else [])
+
+
 def _input_args(path: str) -> List[str]:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".dav":
@@ -158,6 +191,30 @@ def _input_args(path: str) -> List[str]:
     if ext in (".h265", ".265", ".hevc"):
         return ["-f", "hevc"]
     return []
+
+
+def _raw_timing(path: str):
+    """(fps, frames) of a raw H.264/H.265 stream: frames = video packets (demux only, no
+    decoding); fps from the timestamps the decoder gives the first frames (the stream's own VUI
+    timing, else ffmpeg's 25 fps default – the same timing every later decode of the file uses)."""
+    if not (FFPROBE and FFMPEG):
+        return 0.0, 0
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", *_input_args(path), "-count_packets", "-select_streams", "v:0",
+                            "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", path],
+                           capture_output=True, text=True, timeout=1800)
+        n = int((r.stdout.strip().splitlines() or ["0"])[0].strip(",") or 0)
+        r = subprocess.run([FFMPEG, "-nostdin", "-v", "info", *_input_args(path), "-i", path, "-map", "0:v:0",
+                            "-frames:v", "16", "-vf", "showinfo", "-f", "null", "-"],
+                           capture_output=True, text=True, timeout=120)
+        pts = [float(x) for x in re.findall(r"pts_time:([0-9.]+)", r.stderr)]
+        steps = sorted(b - a for a, b in zip(pts, pts[1:]) if b > a)
+        if not steps or not n:
+            return 0.0, n
+        fps = 1.0 / steps[len(steps) // 2]
+        return (round(fps, 3) if 0 < fps < 241 else 0.0), n
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0.0, 0
 
 
 def probe(path: str) -> dict:
@@ -202,6 +259,12 @@ def probe(path: str) -> dict:
             tags = {**fmt.get("tags", {}), **s.get("tags", {})}
             info["creation_time"] = tags.get("creation_time")
             break
+    if info["width"] and not info["duration"] and _input_args(path) and _input_args(path)[1] in ("h264", "hevc"):
+        # Raw elementary streams (.264/.265 DVR dumps) have no container duration and their
+        # probed frame rate is the demuxer's default; time them as the decoder will.
+        fps, n = _raw_timing(path)
+        if fps and n:
+            info["fps"], info["nb_frames"], info["duration"] = fps, n, n / fps
     if not info["width"] or not info["duration"]:
         cap = cv2.VideoCapture(path)
         if cap.isOpened():
@@ -243,9 +306,9 @@ def iter_frames(path: str, fps: float, width: int, start: float = 0.0,
         ch = 1 if gray else 3
         hw = _hw_args()
         cmd = [FFMPEG, "-nostdin", "-v", "error", *hw, "-threads", "0"]
-        if start > 0:
-            cmd += ["-ss", f"{start:.3f}"]
-        cmd += [*_input_args(path), "-i", path]
+        src = decode_path(path)
+        pre, post = seek_args(src, start)
+        cmd += [*pre, *_input_args(src), "-i", src, *post]
         if duration:
             cmd += ["-t", f"{duration:.3f}"]
         cmd += ["-map", "0:v:0", "-an", "-sn", "-vf",
@@ -327,7 +390,9 @@ def read_frame_at(path: str, t: float, width: int = 0, src_size=(0, 0)) -> Optio
     if FFMPEG and sw and sh:
         w = int(min(width, sw) if width else sw) // 2 * 2
         h = int(round(sh * w / sw)) // 2 * 2
-        cmd = [FFMPEG, "-nostdin", "-v", "error", "-ss", f"{max(0.0, t):.3f}", *_input_args(path), "-i", path,
+        src = decode_path(path)
+        pre, post = seek_args(src, t)
+        cmd = [FFMPEG, "-nostdin", "-v", "error", *pre, *_input_args(src), "-i", src, *post,
                "-map", "0:v:0", "-an", "-sn", "-frames:v", "1", "-vf", f"scale={w}:{h}:flags=area",
                "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
         try:
@@ -414,8 +479,10 @@ def export_clip(path: str, start: float, duration: float, out_path: str,
         safe = re.sub(r"[^A-Za-z0-9 _:./-]", "", label).replace(":", r"\:")
         vf += (f",drawtext=text='{safe}':x=10:y=h-th-10:fontsize=18:fontcolor=white:"
                "box=1:boxcolor=black@0.5")
-    base = [FFMPEG, "-nostdin", "-y", "-v", "error", "-ss", f"{max(0, start):.3f}",
-            *_input_args(path), "-i", path, "-t", f"{duration:.3f}", "-map", "0:v:0", "-an"]
+    src = decode_path(path)
+    pre, post = seek_args(src, start)
+    base = [FFMPEG, "-nostdin", "-y", "-v", "error", *pre, *_input_args(src), "-i", src, *post,
+            "-t", f"{duration:.3f}", "-map", "0:v:0", "-an"]
     tail = [*h264_args(27), "-movflags", "+faststart", out_path]
     for filt in (vf, f"scale='min({width},iw)':-2"):     # retry without drawtext
         try:
