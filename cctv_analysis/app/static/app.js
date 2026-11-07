@@ -447,7 +447,7 @@ async function loadSettings() {
   try {
     await loadLicence();
     const s = await api("GET", "/api/settings");
-    $("vlm-key").placeholder = s.vlm_api_key_set ? "(saved – type to replace)" : "";
+    await loadProviders();
     const m = await api("GET", "/api/models");
     clear($("models-out"), el("table", {}, m.models.map(x => el("tr", {}, el("td", { text: x.name }), el("td", { class: x.installed ? "st-ok" : "st-info", text: x.installed ? "installed" : "not downloaded" }),
       el("td", {}, x.installed ? null : el("button", { text: "Download", onclick: async (ev) => {
@@ -460,16 +460,60 @@ $("lic-go").addEventListener("click", async () => {
   try { const r = await api("POST", "/api/license", { key: $("lic-key").value }); toast(r.license.reason); $("lic-key").value = ""; loadLicence(); }
   catch (e) { toast(e.message, true); }
 });
-$("vlm-save").addEventListener("click", async () => {
-  try { await api("PUT", "/api/settings", { vlm_api_key: $("vlm-key").value }); $("vlm-key").value = ""; toast("Saved."); loadSettings(); } catch (e) { toast(e.message, true); }
-});
-$("vlm-test").addEventListener("click", async (ev) => {
+// AI model providers (ordered, fallback): Settings › AI model providers
+const AI = { items: [], kinds: [] };
+async function loadProviders() {
+  const r = await api("GET", "/api/ai/providers");
+  AI.items = r.providers.map(x => ({ ...x, api_key: "" })); AI.kinds = r.kinds; AI.nvidia = r.nvidia_base_url;
+  renderProviders();
+}
+function renderProviders() {
+  clear($("ai-list"), AI.items.length ? AI.items.map((x, i) => el("div", { class: "source", "data-provider": x.id },
+    el("div", { class: "row" }, el("b", { text: `${i + 1}.` }),
+      el("label", { class: "inline" }, el("input", { type: "checkbox", checked: x.enabled !== false, onchange: (e) => { x.enabled = e.target.checked; } }), " use"),
+      el("select", { class: "ai-kind", onchange: (e) => { x.provider = e.target.value; renderProviders(); } },
+        AI.kinds.map(k => el("option", { value: k, text: k, selected: k === x.provider }))),
+      el("input", { class: "w-label ai-label", placeholder: "name (optional)", value: x.label || "", oninput: (e) => { x.label = e.target.value; } }),
+      el("button", { type: "button", text: "↑", disabled: i === 0, onclick: () => { [AI.items[i - 1], AI.items[i]] = [AI.items[i], AI.items[i - 1]]; renderProviders(); } }),
+      el("button", { type: "button", text: "Test", onclick: (ev) => testProvider(x, ev.target) }),
+      el("button", { type: "button", class: "danger", text: "Remove", onclick: () => { AI.items.splice(i, 1); renderProviders(); } })),
+    el("div", { class: "formgrid" },
+      x.provider === "transformers" ? null : el("label", {}, "Server address", el("input", { class: "ai-url", value: x.base_url || "",
+        placeholder: x.provider === "nvidia" ? AI.nvidia : "http://127.0.0.1:11434/v1", oninput: (e) => { x.base_url = e.target.value; } })),
+      el("label", {}, "Model name", el("input", { class: "ai-model", value: x.model || "",
+        placeholder: x.provider === "transformers" ? "Qwen/Qwen3-VL-2B-Instruct" : x.provider === "nvidia" ? "meta/llama-3.2-90b-vision-instruct" : "qwen2.5vl:7b",
+        oninput: (e) => { x.model = e.target.value; } })),
+      x.provider === "transformers" ? null : el("label", {}, "API key", el("input", { class: "ai-key", type: "password", autocomplete: "off",
+        placeholder: x.key_set ? "(saved – type to replace)" : "(if the server needs one)", oninput: (e) => { x.api_key = e.target.value; } }))),
+    el("div", { class: "small ai-result" }))) : el("p", { class: "hint", text: "No provider: the built-in model runs on this PC." }));
+}
+$("ai-add").addEventListener("click", () => { AI.items.push({ id: "", provider: "openai", base_url: "", model: "", enabled: true, api_key: "" }); renderProviders(); });
+async function saveProviders() {
+  const used = new Set(AI.items.map(x => x.id).filter(Boolean));
+  let n = 1;
+  for (const x of AI.items) if (!x.id) { while (used.has("provider-" + n)) n++; x.id = "provider-" + n; used.add(x.id); }
+  const r = await api("PUT", "/api/ai/providers", { providers: AI.items.map(x => ({ id: x.id, label: x.label, provider: x.provider,
+    base_url: x.base_url, model: x.model, enabled: x.enabled !== false, api_key: x.api_key || "" })) });
+  AI.items = r.providers.map(x => ({ ...x, api_key: "" })); renderProviders();
+}
+$("ai-save").addEventListener("click", async (ev) => {
   busy(ev.target, true);
-  try { const model = $("cfg-vlm_model") ? $("cfg-vlm_model").value.trim() : ""; const r = await api("POST", "/api/vlm/test", { base_url: $("vlm-url").value.trim(), api_key: $("vlm-key").value, model });
-    clear($("vlm-out"), el("p", { class: "st-ok", text: "Connected. Models: " + (r.models.join(", ") || "(none listed)") }));
-    const u = $("cfg-vlm_base_url"); if (u && !u.value) u.value = $("vlm-url").value.trim(); }
-  catch (e) { clear($("vlm-out"), el("p", { class: "st-error", text: e.message })); } finally { busy(ev.target, false); }
+  try { await saveProviders(); clear($("ai-out"), el("p", { class: "st-ok", text: "Saved. New analyses use these providers in this order." })); }
+  catch (e) { clear($("ai-out"), el("p", { class: "st-error", text: e.message })); } finally { busy(ev.target, false); }
 });
+async function testProvider(x, btn) {
+  busy(btn, true);
+  const card = () => document.querySelector(`[data-provider="${x.id}"] .ai-result`);
+  try {
+    await saveProviders();
+    const out = card(); if (out) out.textContent = "Testing – sending a picture with a number…";
+    const r = await api("POST", `/api/ai/providers/${encodeURIComponent(x.id)}/test`, {});
+    const c = card();
+    if (c) { c.className = "small ai-result " + (r.vision_ok ? "st-ok" : "st-error");
+      c.textContent = (r.vision_ok ? `Working: it read the test picture (“${r.answer}”).` : `Not working: ${r.error || r.answer}`) +
+        (r.models.length ? `  Models on the server: ${r.models.slice(0, 30).join(", ")}${r.models.length > 30 ? " …" : ""}` : ""); }
+  } catch (e) { toast(e.message, true); } finally { busy(btn, false); }
+}
 $("op-save").addEventListener("click", async () => { try { await api("PUT", "/api/settings", { operator: $("op-name").value.trim() }); $("ex-operator").value = $("op-name").value.trim(); toast("Saved."); } catch (e) { toast(e.message, true); } });
 
 // ------------------------------------------------------------ folder browser

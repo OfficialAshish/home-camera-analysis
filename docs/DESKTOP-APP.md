@@ -66,8 +66,9 @@ Single-folder screens (unchanged, for one DVR without a case):
 6. **Faces** – one card per person; NEW ones outlined.
 7. **Export evidence** – case id, operator, notes, face/plate blurring → ZIP; audit log view with
    integrity check.
-8. **Settings** – licence (state, days left, this computer's ID, activate), AI server address/key +
-   *Test connection*, models (installed / download), operator name.
+8. **Settings** – licence (state, days left, this computer's ID, activate), *AI model providers*
+   (ordered list with fallback: type, address, model name, API key, *Test* with a real picture –
+   `docs/VLM.md`), models (installed / download), operator name.
 
 ## Security model (single user, own computer)
 | Control | Where | Test |

@@ -277,14 +277,38 @@ def test_rate_limit(env):
     assert codes[:60] == [200] * 60 and codes[-1] == 429
 
 
-def test_settings_never_return_the_api_key(env):
+def test_ai_providers_keep_keys_secret_and_are_tested_with_a_real_picture(env):
+    """Settings › AI model providers: an ordered list with model names; keys go to secrets.json
+    (0600) and never back to the browser; Test sends a picture to the provider with its key;
+    analyses get the first as provider and the rest as fallbacks."""
+    from test_vlm_providers import FakeServer
+
+    from cctv_analysis.app import ai_providers
     c = env["c"]
-    r = c.put("/api/settings", json={"vlm_api_key": "sk-secret-value", "operator": "Ravi"}, headers=H())
-    assert r.status_code == 200 and "sk-secret-value" not in r.get_data(as_text=True) and r.get_json()["vlm_api_key_set"]
-    g = c.get("/api/settings", headers=H())
-    assert "sk-secret-value" not in g.get_data(as_text=True)
-    sp = os.path.join(env["app"].config["CCTV_DATA"], "secrets.json")
-    assert oct(os.stat(sp).st_mode & 0o777) == "0o600"
+    fake = FakeServer()
+    try:
+        r = c.put("/api/ai/providers", json={"providers": [
+            {"id": "local", "provider": "openai", "base_url": fake.url, "model": "qwen3-vl:2b", "api_key": "sk-secret-value"},
+            {"id": "nim", "provider": "nvidia", "model": "meta/llama-3.2-11b-vision-instruct", "enabled": True}]}, headers=H())
+        assert r.status_code == 200 and "sk-secret-value" not in r.get_data(as_text=True)
+        got = {p["id"]: p for p in r.get_json()["providers"]}
+        assert got["local"]["key_set"] is True and got["nim"]["key_set"] is False
+        for path in ("/api/settings", "/api/ai/providers"):
+            assert "sk-secret-value" not in c.get(path, headers=H()).get_data(as_text=True)
+        t = c.post("/api/ai/providers/local/test", headers=H()).get_json()
+        assert t["vision_ok"] is True and t["models"] == ["qwen3-vl:2b"] and fake.requests[-1]["auth"] == "Bearer sk-secret-value"
+        ov = ai_providers.config_overrides(env["app"].extensions["cctv"]["settings"])
+        assert (ov["vlm_provider"], ov["vlm_model"], ov["vlm_base_url"]) == ("openai", "qwen3-vl:2b", fake.url)
+        assert [f["model"] for f in ov["vlm_fallbacks"]] == ["meta/llama-3.2-11b-vision-instruct"]
+        assert os.environ[ov["vlm_api_key_env"]] == "sk-secret-value"
+        bad = c.put("/api/ai/providers", json={"providers": [{"id": "x", "provider": "openai", "model": ""}]}, headers=H())
+        assert bad.status_code == 400 and "model name is empty" in bad.get_json()["error"]
+        assert c.put("/api/ai/providers", json={"providers": []}, headers=H()).status_code == 200
+        assert ai_providers.config_overrides(env["app"].extensions["cctv"]["settings"]) == {}
+        sp = os.path.join(env["app"].config["CCTV_DATA"], "secrets.json")
+        assert oct(os.stat(sp).st_mode & 0o777) == "0o600" and "sk-secret-value" not in open(sp).read()  # removed too
+    finally:
+        fake.close()
 
 
 def test_retime_endpoint(analysed):

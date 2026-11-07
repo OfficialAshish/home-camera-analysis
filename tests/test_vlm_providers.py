@@ -20,7 +20,7 @@ import make_plate_video  # noqa: E402
 
 from cctv_analysis.config import Config  # noqa: E402
 from cctv_analysis.pipeline import Analyzer  # noqa: E402
-from cctv_analysis.vlm import OpenAICompatVLM, list_server_models, make_vlm  # noqa: E402
+from cctv_analysis.vlm import ChainVLM, OpenAICompatVLM, make_vlm, probe  # noqa: E402
 
 MODELS = os.environ.get("CCTV_TEST_MODEL_DIR", os.path.join(ROOT, ".test_models"))
 
@@ -43,7 +43,9 @@ class FakeServer:
             if self.fail:
                 return jsonify(error={"message": "model not loaded"}), 500
             text = j["messages"][0]["content"][0]["text"]
-            if "number plate" in text:
+            if "What number" in text:
+                content = "42"
+            elif "number plate" in text:
                 content = "MH12AB1234"
             else:
                 content = json.dumps({"description": "A person walks past the counter.", "suspicious": False,
@@ -88,7 +90,9 @@ def test_openai_provider_wire_format_and_key(fake, monkeypatch):
     assert res["description"] == "A person walks past the counter." and res["suspicious"] is False
     _check_wire_format(fake.requests[-1], "qwen3-vl:2b")
     assert fake.requests[-1]["auth"] == "Bearer sk-test"
-    assert list_server_models(fake.url) == ["qwen3-vl:2b"]
+    pr = probe({"provider": "openai", "model": "qwen3-vl:2b", "base_url": fake.url, "api_key_env": "CCTV_VLM_API_KEY"})
+    assert pr["models"] == ["qwen3-vl:2b"] and pr["answer"] == "42" and pr["vision_ok"] is True and not pr["error"]
+    _check_wire_format(fake.requests[-1], "qwen3-vl:2b")              # the test question carried a real picture
 
 
 def test_openai_provider_not_configured_fails_loudly():
@@ -153,64 +157,109 @@ def test_transformers_provider_runs_a_local_model():
 
 
 def test_vlm_url_normalization_and_nvidia():
-    from cctv_analysis.vlm import normalize_vlm_base_url, resolve_chat_completion_url
-    assert normalize_vlm_base_url("https://integrate.api.nvidia.com/v1/chat/completions") == "https://integrate.api.nvidia.com/v1"
-    assert normalize_vlm_base_url("https://integrate.api.nvidia.com/v1") == "https://integrate.api.nvidia.com/v1"
-    assert resolve_chat_completion_url("https://integrate.api.nvidia.com/v1/chat/completions") == "https://integrate.api.nvidia.com/v1/chat/completions"
+    from cctv_analysis.vlm import NVIDIA_BASE_URL, resolve_chat_completion_url
+    assert resolve_chat_completion_url("https://integrate.api.nvidia.com/v1/chat/completions") == \
+        "https://integrate.api.nvidia.com/v1/chat/completions"
     assert resolve_chat_completion_url("https://integrate.api.nvidia.com/v1") == "https://integrate.api.nvidia.com/v1/chat/completions"
     assert resolve_chat_completion_url("https://integrate.api.nvidia.com") == "https://integrate.api.nvidia.com/v1/chat/completions"
     assert resolve_chat_completion_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1/chat/completions"
-
-    cfg = Config(vlm_provider="nvidia", vlm_base_url="https://integrate.api.nvidia.com/v1/chat/completions")
-    assert not cfg.validate()
+    cfg = Config(vlm_provider="nvidia", vlm_model="meta/llama-3.2-11b-vision-instruct", vlm_base_url="")
+    assert not cfg.validate() and cfg.vlm_base_url == ""                    # validate() no longer edits the config
     v = make_vlm(cfg, "cpu")
-    assert isinstance(v, OpenAICompatVLM)
-    assert v.url == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert isinstance(v, OpenAICompatVLM) and v.url == NVIDIA_BASE_URL + "/chat/completions"
+    assert any("model name is empty" in p for p in Config(vlm_provider="openai", vlm_model="",
+                                                          vlm_base_url="http://x/v1").validate())
 
 
-def test_list_server_models_fallback_when_models_404s():
-    import socket, threading
+def _server(handler):
+    """A one-route fake chat server; handler(json) -> (body, status)."""
     from flask import Flask, jsonify, request
     from waitress.server import create_server
+    app = Flask("fake-" + str(id(handler)))
+    seen = []
 
-    app = Flask("test-fallback")
     @app.post("/v1/chat/completions")
     def chat():
-        return jsonify(choices=[{"message": {"content": "ok"}}])
-
+        j = request.get_json()
+        seen.append(j)
+        body, status = handler(j)
+        return jsonify(body), status
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
     srv = create_server(app, host="127.0.0.1", port=port, threads=2)
     threading.Thread(target=srv.run, daemon=True).start()
+    return srv, f"http://127.0.0.1:{port}/v1", seen
+
+
+def test_probe_works_without_a_model_list_and_needs_a_vision_answer():
+    srv, url, seen = _server(lambda j: ({"choices": [{"message": {"content": "I see the number 42."}}]}, 200))
     try:
-        url = f"http://127.0.0.1:{port}/v1/chat/completions"
-        models = list_server_models(url, model="mistralai/mistral-large-4-1t-a52b")
-        assert any("mistral" in m for m in models) or any("connected" in m for m in models)
+        pr = probe({"provider": "openai", "model": "some/vision-model", "base_url": url + "/chat/completions"})
+        assert pr["models"] == [] and pr["vision_ok"] is True and seen[0]["model"] == "some/vision-model"
+        assert seen[0]["messages"][0]["content"][1]["type"] == "image_url"
+    finally:
+        srv.close()
+    srv, url, _ = _server(lambda j: ({"choices": [{"message": {"content": "Hello!"}}]}, 200))
+    try:
+        pr = probe({"provider": "openai", "model": "text-only", "base_url": url})
+        assert pr["vision_ok"] is False and "vision model" in pr["error"]
+    finally:
+        srv.close()
+    assert "model name is empty" in probe({"provider": "openai", "model": "", "base_url": "http://x"})["error"]
+
+
+def test_reasoning_models_get_more_tokens_and_their_reasoning_is_never_the_answer():
+    import numpy as np
+
+    def answers_when_given_room(j):
+        if j["max_tokens"] < 512:
+            return {"choices": [{"finish_reason": "length", "message": {"content": None,
+                                                                        "reasoning_content": "Let me think..."}}]}, 200
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "A person at the counter."}}]}, 200
+    srv, url, seen = _server(answers_when_given_room)
+    try:
+        v = make_vlm(Config(vlm_provider="openai", vlm_model="r", vlm_base_url=url), "cpu")
+        assert v.ask(np.zeros((32, 32, 3), np.uint8), "describe", 100) == "A person at the counter."
+        assert [j["max_tokens"] for j in seen] == [100, 512] and all(j["temperature"] == 0 for j in seen)
+    finally:
+        srv.close()
+    srv, url, _ = _server(lambda j: ({"choices": [{"finish_reason": "length", "message": {
+        "content": "", "reasoning_content": "thinking forever"}}]}, 200))
+    try:
+        v = make_vlm(Config(vlm_provider="openai", vlm_model="r", vlm_base_url=url), "cpu")
+        with pytest.raises(RuntimeError, match="no answer"):
+            v.ask(np.zeros((32, 32, 3), np.uint8), "describe")
     finally:
         srv.close()
 
 
-def test_reasoning_content_fallback():
-    import socket, threading, numpy as np
-    from flask import Flask, jsonify
-    from waitress.server import create_server
-
-    app = Flask("test-reasoning")
-    @app.post("/v1/chat/completions")
-    def chat():
-        return jsonify(choices=[{"message": {"role": "assistant", "content": None,
-                                             "reasoning_content": "The image shows a person at counter."}}])
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        port = s.getsockname()[1]
-    srv = create_server(app, host="127.0.0.1", port=port, threads=2)
-    threading.Thread(target=srv.run, daemon=True).start()
+def test_fallback_providers_answer_when_the_first_fails(fake, tmp_path):
+    """Primary server dead, a second one configured as fallback: every question is answered by the
+    fallback; after 3 failures the dead one is no longer asked."""
+    import numpy as np
+    bad = FakeServer(fail=True)
     try:
-        cfg = Config(vlm_provider="openai", vlm_base_url=f"http://127.0.0.1:{port}/v1")
+        cfg = Config(vlm_provider="openai", vlm_model="qwen3-vl:2b", vlm_base_url=bad.url,
+                     vlm_fallbacks=[{"provider": "openai", "model": "qwen3-vl:2b", "base_url": fake.url}])
         v = make_vlm(cfg, "cpu")
-        res = v.ask(np.zeros((64, 64, 3), np.uint8), "describe")
-        assert res == "The image shows a person at counter."
+        assert isinstance(v, ChainVLM)
+        for _ in range(5):
+            assert v.read_plate(np.zeros((40, 120, 3), np.uint8)) == "MH12AB1234"
+        assert len(bad.requests) == 3 and len(fake.requests) == 5 and v.last_provider == "openai:qwen3-vl:2b"
+        assert any("vlm_fallbacks[0]" in p for p in Config(vlm_fallbacks=[{"provider": "x", "model": "m"}]).validate())
+        inp = tmp_path / "in"
+        make_cloud_clips.make(str(inp), 2)
+        bad2 = FakeServer(fail=True)
+        try:
+            cfg2 = _cfg(tmp_path, inp, use_vlm=True, vlm_provider="openai", vlm_model="qwen3-vl:2b",
+                        vlm_base_url=bad2.url, vlm_scope="all",
+                        vlm_fallbacks=[{"provider": "openai", "model": "qwen3-vl:2b", "base_url": fake.url}])
+            Analyzer(cfg2).run(build_reports=False)
+            db = sqlite3.connect(os.path.join(cfg2.output_dir, "analysis.db"))
+            vlm = [json.loads(r[0]) for r in db.execute("SELECT vlm FROM events WHERE vlm IS NOT NULL")]
+            assert vlm and all(x["description"] == "A person walks past the counter." for x in vlm)
+        finally:
+            bad2.close()
     finally:
-        srv.close()
+        bad.close()

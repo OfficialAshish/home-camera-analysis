@@ -330,14 +330,11 @@
     <div class="card"><h2>Licence</h2><div id="lic-out"></div>
       <label>Paste licence key</label><textarea id="lic-key" rows="3"></textarea>
       <button id="lic-go" class="primary">Activate</button></div>
-    <div class="card"><h2>AI model server (optional)</h2>
-      <p class="hint">Use a model already running on this PC or your network (Ollama, LM Studio, vLLM, llama.cpp) through its OpenAI-compatible address. Choose “openai” as “AI model runs in” on the Set up page.</p>
-      <div class="formgrid">
-        <label>Server address <input id="vlm-url" placeholder="http://127.0.0.1:11434/v1"></label>
-        <label>API key (if the server needs one) <input id="vlm-key" type="password" autocomplete="off"></label>
-      </div>
-      <div class="row"><button id="vlm-save">Save key</button><button id="vlm-test">Test connection</button></div>
-      <div id="vlm-out"></div></div>
+    <div class="card"><h2>AI model providers</h2>
+      <p class="hint">Vision-language models used for event descriptions, unreadable plates and <i>Ask the AI</i> in the Forensic Studio. They are tried top to bottom: when one fails, the next answers. Types: <b>openai</b> = any OpenAI-compatible server (Ollama, LM Studio, vLLM, llama.cpp, OpenAI); <b>nvidia</b> = NVIDIA NIM / integrate.api.nvidia.com (address may stay empty); <b>transformers</b> = a Hugging Face model run on this PC. With no provider the built-in Qwen3-VL-2B runs on this PC. <i>Test</i> sends a picture with a number and checks the model reads it.</p>
+      <div id="ai-list"></div>
+      <div class="row"><button id="ai-add" type="button">Add provider</button><button id="ai-save" type="button" class="primary">Save providers</button></div>
+      <div id="ai-out"></div></div>
     <div class="card"><h2>Models</h2><div id="models-out"></div></div>
     <div class="card"><h2>Operator</h2><div class="row"><input id="op-name" placeholder="name shown in reviews and exports"><button id="op-save">Save</button></div></div>
   </section>

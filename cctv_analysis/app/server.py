@@ -34,7 +34,7 @@ from .. import __version__
 from .. import licensing as LIC
 from ..audit import AuditLog
 from ..config import PRESETS, VIDEO_EXTENSIONS, Config
-from . import case_api, features
+from . import ai_providers, case_api, features
 from . import results as RS
 from .common import ApiError, abs_dir, inside
 from .jobs import JobManager
@@ -73,7 +73,7 @@ class RateLimiter:
 class Settings:
     """App preferences (settings.json) + secrets (secrets.json, owner-only permissions)."""
     KEYS = {"recent_inputs": list, "recent_outputs": list, "last_config": dict, "operator": str, "language": str,
-            "cases_root": str}
+            "cases_root": str, "vlm_providers": list}
 
     def __init__(self, data_dir: str):
         self.path = os.path.join(data_dir, "settings.json")
@@ -289,13 +289,12 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
 
     @app.get("/api/settings")
     def settings_get():
-        s = settings.load()
-        s["vlm_api_key_set"] = bool(settings.secret("vlm_api_key"))
-        return jsonify(s)
+        return jsonify(settings.load())
 
     @app.put("/api/settings")
     def settings_put():
         d = body()
+        d.pop("vlm_providers", None)                        # edited only through /api/ai/providers
         if d.get("cases_root"):
             root = abs_dir(d["cases_root"], "cases_root", must_exist=False)
             if not os.path.isdir(os.path.dirname(root)):
@@ -303,29 +302,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
             os.makedirs(root, exist_ok=True)
             d["cases_root"] = root
             app_audit.append("cases_root_changed", path=root)
-        if "vlm_api_key" in d:
-            v = d.pop("vlm_api_key")
-            if not isinstance(v, str) or len(v) > 500:
-                raise ApiError(400, "vlm_api_key must be text")
-            settings.set_secret("vlm_api_key", v.strip())
-        s = settings.save(d)
-        s["vlm_api_key_set"] = bool(settings.secret("vlm_api_key"))
-        return jsonify(s)
-
-    @app.post("/api/vlm/test")
-    def vlm_test():
-        from ..vlm import list_server_models
-        d = body()
-        url = d.get("base_url") or d.get("url") or d.get("invoke_url") or ""
-        if not isinstance(url, str) or not re.match(r"^https?://", url.strip()):
-            raise ApiError(400, "base_url must start with http:// or https://")
-        key = d.get("api_key") or settings.secret("vlm_api_key") or os.environ.get("CCTV_VLM_API_KEY", "")
-        model = d.get("model", "")
-        try:
-            models = list_server_models(url.strip(), key, model=model)
-        except Exception as e:
-            raise ApiError(502, f"could not reach the server: {str(e)[:200]}")
-        return jsonify(models=models)
+        return jsonify(settings.save(d))
 
     # --------------------------------------------------------- filesystem
     @app.get("/api/fs/roots")
@@ -400,6 +377,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         merged["work_dir"] = os.path.join(data_dir, "work", hashlib.sha1(outp.encode()).hexdigest()[:12])
         merged.setdefault("model_cache_dir", os.path.join(data_dir, "models"))
         merged["drive_links"] = False
+        merged.update(ai_providers.config_overrides(settings))   # Settings › AI model providers
         try:
             cfg = Config.from_dict(merged)
         except (TypeError, ValueError) as e:
@@ -490,9 +468,6 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         cfg = build_config(d)
         lic = lic_status()
         LIC.apply_limits(cfg, lic)
-        key = settings.secret("vlm_api_key")
-        if cfg.use_vlm and cfg.vlm_provider in ("openai", "nvidia") and key:
-            os.environ[cfg.vlm_api_key_env] = key
         settings.remember("recent_inputs", cfg.input_dir)
         settings.remember("recent_outputs", cfg.output_dir)
         settings.save({"last_config": {k: v for k, v in d.get("config", {}).items() if k not in ("input_dir", "output_dir")}})
@@ -728,5 +703,6 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         job, _ = jobs.start("download", run)
         return jsonify(job=job.public()), 202
 
+    ai_providers.register(app, settings=settings, body=body)
     case_api.register(app, jobs=jobs, settings=settings, lic_status=lic_status, body=body, data_dir=data_dir)
     return app

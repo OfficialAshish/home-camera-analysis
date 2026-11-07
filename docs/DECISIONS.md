@@ -48,12 +48,16 @@ deblurring along the track direction (Wiener, blur length searched coarse-to-fin
 plate OCR, best three re-read by RapidOCR), multi-frame fusion, and saves the enhanced image for a
 human. Measured results and limits: `docs/PLATES.md`. Off by default (≈5× slower per vehicle).
 
-## D7 — VLM is a provider, not a hard-coded model
-`vlm_provider = transformers | openai`. `openai` speaks OpenAI Chat Completions with an
-`image_url` data URL, which Ollama, LM Studio, vLLM and llama.cpp accept (Ollama source checked:
-`openai/openai.go`, case `"image_url"`). The API key is read from the environment variable named
-in `vlm_api_key_env`; the app stores it in `secrets.json` (owner-only permissions), never in
-`config_used.json`. Three consecutive failures disable the VLM for the run (circuit breaker).
+## D7 — VLM is a provider, not a hard-coded model; several providers fall back in order
+`vlm_provider = transformers | openai | nvidia`, plus `vlm_fallbacks` (more providers tried in
+order; `vlm.ChainVLM`). `openai`/`nvidia` speak OpenAI Chat Completions with an `image_url` data
+URL, which Ollama, LM Studio, vLLM, llama.cpp and NVIDIA's `integrate.api.nvidia.com` accept
+(sources in `docs/VLM.md`). The desktop app configures the list only in *Settings › AI model
+providers* (`app/ai_providers.py`): one place, so the Set up page and the Studio cannot disagree.
+Keys are stored per provider in `secrets.json` (owner-only permissions) and handed to the
+analysis as environment variables whose names are in the configuration – never in
+`config_used.json`. Temperature 0 always: readings are evidence aids and must be repeatable.
+Three consecutive failures of the whole chain disable the VLM for the run (circuit breaker).
 
 ## D8 — Desktop app = local web UI + PyInstaller bundle
 A browser UI served on 127.0.0.1 by waitress works on Windows/macOS/Linux, needs no UI toolkit

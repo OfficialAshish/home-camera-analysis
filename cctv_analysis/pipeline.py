@@ -198,8 +198,8 @@ class Analyzer:
     def vlm(self):
         if self._vlm is None and self.cfg.use_vlm and not self._vlm_failed:
             try:
-                from .vlm import make_vlm
-                log.info("Loading VLM %s via %s ...", self.cfg.vlm_model, self.cfg.vlm_provider)
+                from .vlm import make_vlm, provider_specs
+                log.info("AI model: %s", " → ".join(f"{s['provider']}:{s['model']}" for s in provider_specs(self.cfg)))
                 self._vlm = make_vlm(self.cfg, self.device)
             except Exception as e:
                 log.warning("VLM disabled: %s", e)
@@ -215,7 +215,7 @@ class Analyzer:
             self._vlm_failed = True
             self._vlm = None
             log.error("AI descriptions disabled for the rest of this run after 3 consecutive failures – check "
-                      "the model / server (%s %s)", self.cfg.vlm_provider, self.cfg.vlm_base_url or self.cfg.vlm_model)
+                      "the AI model providers (%s %s)", self.cfg.vlm_provider, self.cfg.vlm_base_url or self.cfg.vlm_model)
 
     def _vlm_if_enabled(self):
         return self.vlm if self.cfg.use_vlm else None

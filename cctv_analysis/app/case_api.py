@@ -415,7 +415,8 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         options = d.get("options") or {}
         if not isinstance(options, dict):
             raise ApiError(400, "options must be an object")
-        options = {**features.APP_DEFAULTS, **options}
+        from . import ai_providers
+        options = {**features.APP_DEFAULTS, **options, **ai_providers.config_overrides(settings)}
         options.setdefault("model_cache_dir", models_dir)
         try:
             run_options(options, preset)
@@ -438,9 +439,6 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         if sel is not None and not set(sel) <= known:
             raise ApiError(400, f"sources must be ids of this case's sources: {sorted(known)}")
         lic = lic_status()
-        key = settings.secret("vlm_api_key")
-        if options.get("use_vlm") and options.get("vlm_provider") in ("openai", "nvidia") and key:
-            os.environ[Config().vlm_api_key_env] = key
 
         def run(job):
             res = run_case(c, options, preset, job.update, job.cancel, work_root=os.path.join(data_dir, "work"),
