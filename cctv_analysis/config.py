@@ -172,6 +172,9 @@ class Config:
     plate_region: str = "IN"                     # IN (Indian formats, incl. BH series) | any
     plate_min_vehicle_px: int = 48               # skip vehicles smaller than this (box height, detection frame)
     plate_reads_per_track: int = 6               # plate crops read per vehicle track
+    # a read below this fused confidence is not reported: the plate stays empty ("not read") for an
+    # examiner to type, the machine's best guess is kept only as ocr_text
+    plate_min_confidence: float = 0.6
     plate_watchlist: List[str] = field(default_factory=list)   # plates that raise a "watchlist_plate" alert
     plate_watchlist_max_edits: int = 1           # tolerated OCR differences when matching the watchlist
 
@@ -263,6 +266,8 @@ class Config:
         for k in ("motion_fps", "detect_fps", "reel_fps"):
             if not getattr(self, k) or getattr(self, k) <= 0:
                 p.append(f"{k}: must be > 0")
+        if not 0 <= self.plate_min_confidence <= 1:
+            p.append("plate_min_confidence: must be between 0 and 1")
         if not 0 <= self.motion_sensitivity <= 1:
             p.append("motion_sensitivity: must be between 0 and 1")
         return p

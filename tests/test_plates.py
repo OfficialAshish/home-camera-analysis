@@ -1,5 +1,6 @@
 """Number plates: format rules, voting, frame-exact seeking, and the real pipeline on a video of a
 car with an Indian plate (sharp, and motion-blurred with/without enhancement)."""
+import json
 import os
 import sqlite3
 import sys
@@ -36,6 +37,10 @@ def test_vote_and_watchlist():
     assert P.watchlist_match("MH12AB1234", ["mh 12 ab 1284"], 1) == "MH12AB1284"
     assert P.watchlist_match("MH12AB1234", ["MH12AB1284"], 0) == ""
     assert not P.is_reportable("MH12", 0.93, False) and P.is_reportable("MH12AB1234", 0.6, True)
+    # below the confidence limit nothing is reported – also a perfectly formatted read
+    assert not P.is_reportable("MH12AB1234", 0.59, True) and not P.is_reportable("MH12AE", 0.514, False)
+    assert P.is_reportable("MH12AB1234", 0.8, True, 0.8) and not P.is_reportable("MH12AB1234", 0.79, True, 0.8)
+    assert any("plate_min_confidence" in p for p in Config(plate_min_confidence=1.5).validate())
 
 
 def test_read_frame_at_returns_the_exact_frame(tmp_path):
@@ -72,7 +77,7 @@ def _run(tmp_path, video_kw, **cfg_kw):
                  make_highlight_reel=False, save_clips=False, **cfg_kw)
     Analyzer(cfg).run(build_reports=False)
     db = sqlite3.connect(os.path.join(cfg.output_dir, "analysis.db"))
-    plates = db.execute("SELECT text, confidence, valid_format, method, crop_path, enhanced_path FROM plates "
+    plates = db.execute("SELECT text, confidence, valid_format, method, crop_path, enhanced_path, ocr_text FROM plates "
                         "ORDER BY confidence DESC").fetchall()
     ev = db.execute("SELECT plates, flags, level FROM events").fetchall()
     return plates, ev
@@ -90,12 +95,32 @@ def test_sharp_plate_is_read_and_watchlist_alerts(tmp_path):
     assert any("watchlist_plate" in e[1] for e in ev) and any(e[2] in ("REVIEW", "HIGH") for e in ev)
 
 
+def test_an_uncertain_read_is_not_the_plate_but_its_guess_and_position_are_kept(tmp_path):
+    """Reported in review: plate readings were too vague. A read below plate_min_confidence is
+    not the plate – the plates row says "not read" (text ''), it raises no watchlist alert and the
+    event lists no plate – but the machine's guess (ocr_text) and where the plate is in the frame
+    (box, full-resolution pixels + frame size) are kept, so an examiner can enhance and type it."""
+    _run(tmp_path, {}, use_plates=True, plate_watchlist=["MH12AB1234"], plate_min_confidence=1.0)
+    db = sqlite3.connect(os.path.join(tmp_path, "out", "analysis.db"))
+    rows = db.execute("SELECT text, ocr_text, confidence, box, watchlist FROM plates ORDER BY confidence DESC").fetchall()
+    ev = db.execute("SELECT plates, flags FROM events").fetchall()
+    assert rows and all(r[0] == "" for r in rows)                        # nothing confident enough
+    assert rows[0][1] == "MH12AB1234" and 0.9 < rows[0][2] < 1.0          # the guess is kept
+    x1, y1, x2, y2, W, H = json.loads(rows[0][3])
+    assert (W, H) == (1600, 900) and 0 <= x1 < x2 <= W and 0 <= y1 < y2 <= H and 100 < x2 - x1 < 400
+    assert all(r[4] == "" for r in rows) and all("watchlist_plate" not in e[1] for e in ev)
+    assert all(json.loads(e[0]) == [] for e in ev)
+
+
 def test_motion_blurred_plate_needs_enhancement(tmp_path):
-    """9-px motion blur: plain OCR cannot read it (negative control), deblur+ensemble can."""
+    """9-px motion blur: plain OCR cannot read it (negative control), deblur+ensemble can – at a
+    fused confidence (0.57 measured) below plate_min_confidence, so it is the machine's guess for
+    an examiner to confirm (ocr_text), not a reported plate."""
     plain, _ = _run(tmp_path / "a", {"blur": 9, "scale": 1.2}, use_plates=True)
-    assert not plain or plain[0][0] != "MH12AB1234"
+    assert not plain or (plain[0][6] or "") != "MH12AB1234"
     enh, _ = _run(tmp_path / "b", {"blur": 9, "scale": 1.2}, use_plates=True, plate_enhance=True)
-    assert enh and enh[0][0] == "MH12AB1234" and enh[0][2] == 1 and "deblur" in enh[0][3]
+    assert enh and enh[0][6] == "MH12AB1234" and enh[0][2] == 1 and "deblur" in enh[0][3]
+    assert enh[0][0] == ("MH12AB1234" if enh[0][1] >= 0.6 else "")          # reported only when confident
     assert enh[0][5] and os.path.exists(enh[0][5])                          # enhanced image saved for a human
 
 

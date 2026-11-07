@@ -124,7 +124,8 @@ class Store:
     _ADDED = {"videos": {"qhash": "TEXT", "duplicate_of": "TEXT", "run_id": "TEXT"},
               "events": {"run_id": "TEXT", "time_source": "TEXT", "luma_p99": "REAL", "plates": "TEXT",
                          "crossings": "TEXT"},
-              "tracks": {"watchlist": "TEXT", "crossings": "TEXT"}}
+              "tracks": {"watchlist": "TEXT", "crossings": "TEXT"},
+              "plates": {"ocr_text": "TEXT", "box": "TEXT"}}
 
     def _migrate(self):
         for table, cols in self._ADDED.items():

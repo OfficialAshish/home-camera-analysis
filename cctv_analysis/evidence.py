@@ -138,7 +138,9 @@ def _report_html(case: dict, events: List[dict], files: dict) -> str:
         flags = "".join(f"<li><b>{E(f['flag'])}</b> (+{f['points']:g}) {E(f['reason'])}</li>" for f in e["flags"])
         snaps = "".join(f'<img src="{E(p)}" style="width:32%;margin:2px">' for p in e["images"][:6])
         vlm = (e.get("vlm") or {}).get("description", "")
-        plates = ", ".join(f"{p['text']} ({p['confidence']:.2f})" for p in e["plates"]) or "–"
+        plates = ", ".join(f"{p['examiner_reading']['text'] or 'not readable'} (examiner; machine "
+                           f"{p['text'] or 'not read'})" if p.get("examiner_reading") else
+                           f"{p['text']} ({p['confidence']:.2f})" for p in e["plates"]) or "–"
         rows.append(f"""<section><h2>{E(e['event_id'])} — {E(e['level'])} {e['score']:g}</h2>
 <table><tr><th>Camera</th><td>{E(e['camera'] or '')}</td><th>Recorded</th><td>{E(e['start_dt'] or 'unknown')} → {E((e['end_dt'] or '')[11:])}</td></tr>
 <tr><th>Time source</th><td>{E(e['time_source'] or '')}</td><th>Duration</th><td>{e['duration']:.0f} s</td></tr>
@@ -193,6 +195,8 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
             "redacted": bool(redact), "redact_plates": bool(redact_plates)}
     src_hash = {}
     report_events = []
+    from .reviews import plate_readings
+    readings = plate_readings(out_dir)
     tmp = tempfile.mkdtemp(prefix="evidence_")
     try:
         for n, e in enumerate(sorted(evs, key=lambda x: (x["start_dt"] or "", x["event_id"])), 1):
@@ -257,13 +261,16 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
                                          "rel_path", "start_off", "end_off", "kind", "level", "score", "flags",
                                          "identities", "max_persons", "n_person_tracks", "objects", "crossings")}
             meta["ai_description"] = (e.get("vlm") or {}).get("description", "") if isinstance(e.get("vlm"), dict) else ""
-            meta["plates"] = [{k: p[k] for k in ("text", "confidence", "valid_format", "vehicle", "t_off", "dt",
-                                                  "method", "watchlist")} for p in pl]
+            # the machine's read as it was, and an examiner's reading next to it (never merged into it)
+            meta["plates"] = [{**{k: p[k] for k in ("text", "confidence", "valid_format", "vehicle", "t_off", "dt",
+                                                     "method", "watchlist")},
+                               "machine_guess": (p.get("ocr_text") or "") if not p["text"] else "",
+                               "examiner_reading": readings.get((e["event_id"], int(p["track"])))} for p in pl]
             meta["source_sha256"] = src_hash.get(src, "")
             meta["notes"] = note
             with open(os.path.join(d, "event.json"), "w", encoding="utf-8") as fh:
                 json.dump(meta, fh, indent=1, default=str)
-            report_events.append({**e, "plates": [p for p in meta["plates"] if p["text"]],
+            report_events.append({**e, "plates": [p for p in meta["plates"] if p["text"] or p["examiner_reading"]],
                                   "original_note": note.get("original_segment", "not included (redacted package)"),
                                    "images": [f"events/{e['event_id']}/" + x.split(f"events/{e['event_id']}/", 1)[-1]
                                               for x in images]})

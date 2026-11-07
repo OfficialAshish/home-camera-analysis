@@ -735,13 +735,15 @@ class Analyzer:
                 if not res:
                     continue
                 from .plates import is_reportable, watchlist_match
-                ok = is_reportable(res["text"], res["confidence"], res["valid_format"])
+                ok = is_reportable(res["text"], res["confidence"], res["valid_format"], cfg.plate_min_confidence)
                 wl = watchlist_match(res["text"], cfg.plate_watchlist, cfg.plate_watchlist_max_edits) if ok else ""
                 cp = _imwrite(os.path.join(edir, "plates", f"track{tid:03d}_plate.jpg"), res["crop"], 95)
                 ep = _imwrite(os.path.join(edir, "plates", f"track{tid:03d}_enhanced.jpg"), res["enhanced"], 95) \
                     if res.get("enhanced") is not None else ""
                 row = {"event_id": eid, "track": tid, "vehicle": tracks[tid]["cls"], "camera": camera,
-                       "t_off": round(res["t_off"], 2), "dt": _at(base, res["t_off"]), "text": res["text"],
+                       "t_off": round(res["t_off"], 2), "dt": _at(base, res["t_off"]),
+                       "text": res["text"] if ok else "", "ocr_text": res["text"],
+                       "box": [round(float(v), 1) for v in res["box"]] + [meta["width"], meta["height"]],
                        "confidence": res["confidence"], "valid_format": int(res["valid_format"]),
                        "n_reads": len(res["reads"]), "reads": res["reads"], "method": res["method"],
                        "crop_path": cp, "enhanced_path": ep, "watchlist": wl}

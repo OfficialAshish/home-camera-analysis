@@ -376,9 +376,9 @@ async function openCaseEvent(sid, eid) {
         onclick: () => runSightings({ kind: "appearance", min_score: 0.7, query: { source_id: sid, event_id: eid, track: t.track } }, `Person #${t.track} of ${e.source_label}/${e.camera}`) }) : null,
       t.identity_id ? el("button", { type: "button", text: `Follow face ${t.identity}`,
         onclick: () => runSightings(/^P\d{4,}$/.test(t.identity) ? { kind: "face", value: t.identity_id, query: { source_id: sid } } : { kind: "face", value: t.identity }, `Face ${t.identity}`) }) : null)))) : null,
-    e.plates.length ? el("div", {}, el("h3", { text: "Number plates" }), el("div", { class: "grid" }, e.plates.map(p => el("div", { class: "tile" },
-      p.crop ? el("img", { src: caseFile(p.crop), alt: "" }) : null, el("div", { class: "plate-text", text: p.text || "unreadable" }),
-      p.text ? el("button", { type: "button", text: "Find this vehicle", onclick: () => runSightings({ kind: "plate", value: p.text, fuzzy: true }, `Vehicle ${p.text}`) }) : null)))) : null,
+    e.plates.length ? el("div", {}, el("h3", { text: "Number plates" }), el("div", { class: "grid" }, e.plates.map(p =>
+      plateTile(p, caseFile, casePlateSaver(sid, () => openCaseEvent(sid, eid)),
+        [p.text ? el("button", { type: "button", text: "Find this vehicle", onclick: () => runSightings({ kind: "plate", value: p.text, fuzzy: true }, `Vehicle ${p.text}`) }) : null])))) : null,
     el("div", { class: "gallery" }, e.snapshots.map(s => el("a", { href: caseFile(s.annotated || s.raw), target: "_blank", rel: "noopener" },
       el("img", { src: caseFile(s.annotated || s.raw), title: s.time || "", loading: "lazy" })))));
   d.scrollIntoView({ behavior: "smooth" });
@@ -417,6 +417,25 @@ $("pp-go").addEventListener("click", async () => {
           onclick: () => runSightings({ kind: "appearance", min_score: 0.7, query: { source_id: p.source_id, event_id: p.event_id, track: p.track } }, `Person in ${p.upper} / ${p.lower}`) })))));
   } catch (e) { toast(e.message, true); }
 });
+function casePlateSaver(sid, after) {
+  return async (p, text, note) => {
+    await api("PUT", caseApi(`/plates/${encodeURIComponent(sid)}/${encodeURIComponent(p.event_id)}/${p.track}`), { text, note });
+    after();
+  };
+}
+$("pu-go").addEventListener("click", unreadPlates);
+async function unreadPlates() {
+  if (!needCase()) return;
+  const n = nextSeq("search");
+  try {
+    const r = await api("GET", caseApi("/plates?unread=1&limit=300"));
+    if (stale("search", n)) return;
+    clear($("srch-out"), el("p", { class: "hint", text: r.plates.length ? `${r.plates.length} vehicle(s) whose plate neither the machine (confidently) nor an examiner has read, in calibrated time order. Type what you can read, or enhance the plate in the Forensic Studio first.` : "Every plate of the case was read (by the machine or an examiner)." }),
+      el("div", { class: "grid" }, r.plates.map(p => plateTile(p, caseFile, casePlateSaver(p.source_id, unreadPlates),
+        [el("div", { class: "small", text: p.source_label }),
+         el("button", { type: "button", text: "Open event", onclick: () => openCaseEvent(p.source_id, p.event_id) })]))));
+  } catch (e) { toast(e.message, true); }
+}
 $("ps-go").addEventListener("click", () => { if (needCase()) runSightings({ kind: "plate", value: $("ps-q").value.trim(), fuzzy: $("ps-fuzzy").checked }, `Vehicle ${$("ps-q").value.trim().toUpperCase()}`); });
 $("ps-q").addEventListener("keydown", (e) => { if (e.key === "Enter") $("ps-go").click(); });
 

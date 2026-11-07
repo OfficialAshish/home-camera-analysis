@@ -589,7 +589,25 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
             edits = max(0, min(2, int(request.args.get("edits", 1))))
         except ValueError:
             raise ApiError(400, "edits must be 0, 1 or 2")
-        return jsonify(plates=RS.plates_search(out_param(), request.args.get("q", "")[:20], edits))
+        return jsonify(plates=RS.plates_search(out_param(), request.args.get("q", "")[:20], edits,
+                                               unread=request.args.get("unread") == "1"))
+
+    @app.put("/api/results/plates/<event_id>/<int:track>")
+    def r_plate_reading(event_id, track):
+        """The examiner's reading of a plate: {"text": "MH12AB1234"} ('' = not readable), or {"text": null} to remove it."""
+        out = out_param()
+        d = body()
+        text = d.get("text")
+        if text is not None and (not isinstance(text, str) or len(text) > 30):
+            raise ApiError(400, "text: the plate as read, or null to remove the reading")
+        try:
+            p = RS.set_plate_reading(out, event_id, track, text, str(d.get("note") or "")[:1000],
+                                     settings.load().get("operator", ""))
+        except KeyError as e:
+            raise ApiError(404, str(e).strip("'\""))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        return jsonify(plate=p)
 
     @app.get("/api/results/faces")
     def r_faces():

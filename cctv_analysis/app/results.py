@@ -170,13 +170,15 @@ def event_detail(out: str, event_id: str) -> Optional[dict]:
             return None
         tracks = db.execute("SELECT track, cls, identity, known_name, watchlist, duration, face_crop, person_crop "
                             "FROM tracks WHERE event_id=? ORDER BY track", (event_id,)).fetchall()
-        plates = db.execute("SELECT track, vehicle, text, confidence, valid_format, method, crop_path, enhanced_path, "
-                            "watchlist, dt FROM plates WHERE event_id=? ORDER BY confidence DESC", (event_id,)).fetchall()
+        plates = db.execute(f"SELECT {_plate_cols(db)} FROM plates WHERE event_id=? ORDER BY confidence DESC",
+                            (event_id,)).fetchall()
         vid = db.execute("SELECT duration, time_source FROM videos WHERE id=?", (e["video_id"],)).fetchone()
         rv = db.execute("SELECT event_id, status, notes, reviewer, updated FROM rv.reviews WHERE event_id=?",
                         (event_id,)).fetchone()
     finally:
         db.close()
+    from ..reviews import effective_plate, plate_readings
+    readings = plate_readings(out)
     vlm = _j(e["vlm"], None) or {}
     snaps = _j(e["snapshots"], [])
     return {"event_id": e["event_id"], "level": e["level"], "score": e["score"], "camera": e["camera"],
@@ -194,10 +196,8 @@ def event_detail(out: str, event_id: str) -> Optional[dict]:
                         "identity_id": t["identity"] or "",
                         "watchlist": t["watchlist"] or "", "seconds": t["duration"], "face": rel_to(out, t["face_crop"]),
                         "person": rel_to(out, t["person_crop"])} for t in tracks],
-            "plates": [{"track": p["track"], "vehicle": p["vehicle"], "text": p["text"], "confidence": p["confidence"],
-                        "valid_format": bool(p["valid_format"]), "method": p["method"], "crop": rel_to(out, p["crop_path"]),
-                        "enhanced": rel_to(out, p["enhanced_path"]), "watchlist": p["watchlist"] or "", "time": p["dt"]}
-                       for p in plates],
+            "plates": [{**_plate_public(out, p), "method": p["method"]} for p in
+                       (effective_plate(dict(x), readings) for x in plates)],
             "review": dict(rv) if rv else None}
 
 
@@ -246,28 +246,98 @@ def _plate_texts(out: str, db) -> list:
     return texts
 
 
-def plates_search(out: str, q: str = "", max_edits: int = 1, limit: int = 100) -> list:
+_PLATE_COLS = ("id", "event_id", "track", "text", "ocr_text", "confidence", "valid_format", "dt", "camera", "vehicle",
+               "crop_path", "enhanced_path", "watchlist", "method")
+
+
+def _plate_cols(db) -> str:
+    """The plate columns to select; a column an older version did not write yet (results opened
+    read-only are not migrated) is selected as NULL."""
+    have = {r[1] for r in db.execute("PRAGMA table_info(plates)")}
+    return ", ".join(c if c in have else f"NULL AS {c}" for c in _PLATE_COLS)
+
+
+def _plate_public(out: str, p: dict) -> dict:
+    """A plate for the browser. ``text``: the plate that counts – the examiner's reading, else the
+    confident machine read – or null (not read). ``machine_text``: the confident machine read or
+    null; ``ocr_text``: the machine's best guess, also when it was not confident enough to report
+    (null when there was none); ``reading``: the examiner's reading ({"text": ""} = examined, not
+    readable) or null."""
+    rd = p.get("reading")
+    return {"event_id": p["event_id"], "track": p["track"], "text": p["text"] or None,
+            "machine_text": p["machine_text"] or None, "ocr_text": p.get("ocr_text") or p["machine_text"] or None,
+            "confidence": p["confidence"], "valid_format": bool(p["valid_format"]), "time": p["dt"],
+            "camera": p["camera"], "vehicle": p["vehicle"], "crop": rel_to(out, p["crop_path"]),
+            "enhanced": rel_to(out, p["enhanced_path"]), "watchlist": p["watchlist"] or "",
+            "reading": {k: rd[k] for k in ("text", "reviewer", "updated", "note")} if rd else None}
+
+
+def plates_search(out: str, q: str = "", max_edits: int = 1, limit: int = 100, unread: bool = False) -> list:
+    """Plates whose text (the examiner's reading when there is one, else the confident machine
+    read) matches `q` (or all); `unread`: the vehicles whose plate nobody could read yet."""
+    from ..reviews import effective_plate, plate_readings
     nq = normalize(q)
+    rd = plate_readings(out)
     db = _db(out)
     try:
-        if nq:
-            match = [t for t in _plate_texts(out, db) if nq in t or within_edits(nq, t, max_edits)]
-            if not match:
-                return []
-            match = match[:900]                     # SQLite variable limit; more is not a useful search
-            rows = db.execute("SELECT text, confidence, valid_format, dt, camera, event_id, vehicle, crop_path, "
-                              "enhanced_path, watchlist FROM plates WHERE text IN (" + ",".join("?" * len(match)) +
-                              ") ORDER BY dt DESC LIMIT ?", match + [int(limit)]).fetchall()
+        cols = _plate_cols(db)
+        if unread:
+            rows = [dict(r) for r in db.execute(f"SELECT {cols} FROM plates WHERE text = '' OR text IS NULL "
+                                                "ORDER BY dt DESC LIMIT ?", (int(limit) * 3,))]
+        elif nq:
+            match = [t for t in _plate_texts(out, db) if nq in t or within_edits(nq, t, max_edits)][:900]
+            rows = [dict(r) for r in db.execute(f"SELECT {cols} FROM plates WHERE text IN (" +
+                                                ",".join("?" * len(match)) + ")", match)] if match else []
         else:
-            rows = db.execute("SELECT text, confidence, valid_format, dt, camera, event_id, vehicle, crop_path, "
-                              "enhanced_path, watchlist FROM plates WHERE text != '' ORDER BY dt DESC LIMIT ?",
-                              (int(limit),)).fetchall()
+            rows = [dict(r) for r in db.execute(f"SELECT {cols} FROM plates WHERE text != '' ORDER BY dt DESC "
+                                                "LIMIT ?", (int(limit) * 3,))]
+        have = {r["id"] for r in rows}
+        for (eid, tr), v in rd.items():                    # examiners' readings are searchable too
+            if unread or not v["text"] or (nq and not (nq in v["text"] or within_edits(nq, v["text"], max_edits))):
+                continue
+            rows += [dict(r) for r in db.execute(f"SELECT {cols} FROM plates WHERE event_id=? AND track=?",
+                                                 (eid, tr)) if r["id"] not in have]
     finally:
         db.close()
-    return [{"text": r["text"], "confidence": r["confidence"], "valid_format": bool(r["valid_format"]),
-             "time": r["dt"], "camera": r["camera"], "event_id": r["event_id"], "vehicle": r["vehicle"],
-             "crop": rel_to(out, r["crop_path"]), "enhanced": rel_to(out, r["enhanced_path"]),
-             "watchlist": r["watchlist"] or ""} for r in rows]
+    eff = [effective_plate(r, rd) for r in rows]
+    if unread:
+        eff = [p for p in eff if not p["text"] and p["reading"] is None]
+    else:
+        eff = [p for p in eff if p["text"] and (not nq or nq in p["text"] or within_edits(nq, p["text"], max_edits))]
+    eff.sort(key=lambda p: p["dt"] or "", reverse=True)
+    return [_plate_public(out, p) for p in eff[:int(limit)]]
+
+
+def set_plate_reading(out: str, event_id: str, track: int, text: Optional[str], note: str = "",
+                      reviewer: str = "") -> dict:
+    """The examiner's reading of one vehicle's plate (text None = remove it, '' = not readable).
+    Audited in the folder's audit log with the machine's read next to it."""
+    from ..audit import AuditLog
+    from ..reviews import Reviews, effective_plate
+    db = _db(out)
+    try:
+        r = db.execute(f"SELECT {_plate_cols(db)} FROM plates WHERE event_id=? AND track=?",
+                       (event_id, int(track))).fetchone()
+    finally:
+        db.close()
+    if r is None:
+        raise KeyError("no plate of this vehicle in this event")
+    row = dict(r)
+    rv = Reviews(out)
+    try:
+        if text is None:
+            rv.clear_plate(event_id, track)
+        else:
+            rv.set_plate(event_id, track, text, row.get("ocr_text") or row.get("text") or "", reviewer, note)
+        readings = rv.plates()
+    finally:
+        rv.close()
+    eff = effective_plate(row, readings)
+    AuditLog(os.path.join(out, "audit_log.jsonl")).append(
+        "plate_reading" if text is not None else "plate_reading_removed", event_id=event_id, track=int(track),
+        examiner_text=eff["text"] if text is not None else None, machine_text=row.get("text") or "",
+        machine_guess=row.get("ocr_text") or "", machine_confidence=row.get("confidence"), note=note, by=reviewer)
+    return _plate_public(out, eff)
 
 
 def faces(out: str, limit: int = 300) -> list:

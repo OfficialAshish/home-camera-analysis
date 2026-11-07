@@ -149,3 +149,42 @@ def test_reel_segments_cover_every_sighting_once(tmp_path):
     assert segs[1]["calibrated_start"] == "2026-01-01 10:00:08"
     assert segs[1]["dvr_at_zero"].strftime(J.FMT) == "2026-01-01 10:01:00"
     assert sum(len(g["points"]) for g in segs) == 4
+
+
+def test_an_examiners_plate_reading_counts_in_the_case(case, tmp_path):
+    """Through the app: an examiner types the plate of the Shop's car differently (as read on an
+    enhanced still) – the case audit log records it with the machine read, the sightings of the
+    typed plate find that car and the machine's text no longer does on that source; removing the
+    reading restores the machine's. The case's unread list shows a vehicle nobody could read."""
+    import sqlite3
+
+    from cctv_analysis.app.server import create_app
+    app = create_app(str(tmp_path / "data"), "tok", 8765)
+    app.extensions["cctv"]["settings"].save({"cases_root": os.path.dirname(case.root)})
+    c, H = app.test_client(), {"X-CCTV-Token": "tok", "Host": "127.0.0.1:8765"}
+    cid = case.case_id
+    db = sqlite3.connect(os.path.join(case.source_dir("shop-dvr"), "analysis.db"))
+    eid, track = db.execute("SELECT event_id, track FROM plates WHERE text='MH12AB1234' ORDER BY confidence DESC").fetchone()
+    db.close()
+    url = f"/api/cases/{cid}/plates/shop-dvr/{eid}/{track}"
+    try:
+        r = c.put(url, json={"text": "MH14XY9999", "note": "enhanced still"}, headers=H)
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["plate"]["machine_text"] == "MH12AB1234"
+        typed = J.sightings(case, "plate", "MH14XY9999")
+        assert [(p["source_id"], p["event_id"], p["track"], p["plate"]) for p in typed] == \
+            [("shop-dvr", eid, track, "MH14XY9999")]
+        machine = J.sightings(case, "plate", "MH12AB1234")
+        assert ("shop-dvr", eid, track) not in {(p["source_id"], p["event_id"], p["track"]) for p in machine}
+        assert "bank-dvr" in {p["source_id"] for p in machine}
+        a = [x for x in case.audit.entries(50) if x["action"] == "plate_reading"][-1]["details"]
+        assert (a["examiner_text"], a["machine_text"], a["source"]) == ("MH14XY9999", "MH12AB1234", "shop-dvr")
+        listed = c.get(f"/api/cases/{cid}/plates", query_string={"q": "MH14XY9999"}, headers=H).get_json()["plates"]
+        assert [(p["source_id"], p["text"]) for p in listed] == [("shop-dvr", "MH14XY9999")]
+        unread = c.get(f"/api/cases/{cid}/plates", query_string={"unread": "1"}, headers=H).get_json()["plates"]
+        assert all(p["text"] is None and p["reading"] is None for p in unread)
+        assert c.put(f"/api/cases/{cid}/plates/nope/{eid}/{track}", json={"text": "X1"}, headers=H).status_code == 404
+    finally:
+        assert c.put(url, json={"text": None}, headers=H).status_code == 200
+    assert ("shop-dvr", eid, track) in {(p["source_id"], p["event_id"], p["track"])
+                                        for p in J.sightings(case, "plate", "MH12AB1234")}

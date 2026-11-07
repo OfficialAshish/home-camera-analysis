@@ -603,6 +603,47 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         e.pop("review", None)                     # reviews belong to the single-folder Results screen
         return jsonify(event=e)
 
+    @app.put("/api/cases/<cid>/plates/<sid>/<eid>/<int:track>")
+    def case_plate_reading(cid, sid, eid, track):
+        """The examiner's reading of a plate ('' = not readable, null = remove the reading); audited
+        in the source's and the case's audit log. Searches and sightings use it over the machine read."""
+        from . import results as RS
+        d = body()
+        text = d.get("text")
+        if text is not None and (not isinstance(text, str) or len(text) > 30):
+            raise ApiError(400, "text: the plate as read, or null to remove the reading")
+        c = open_case(cid)
+        source_of(c, sid)
+        try:
+            p = RS.set_plate_reading(c.source_dir(sid), eid, track, text, _text(d.get("note"), "note", 1000), user())
+        except KeyError as e:
+            raise ApiError(404, str(e).strip("'\""))
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        c.audit.append("plate_reading", case_id=c.case_id, source=sid, event_id=eid, track=track,
+                       examiner_text=p["reading"]["text"] if p["reading"] else None, machine_text=p["machine_text"],
+                       machine_guess=p["ocr_text"], by=user())
+        return jsonify(plate=p)
+
+    @app.get("/api/cases/<cid>/plates")
+    def case_plates(cid):
+        """Plates of every source: matching `q`, or `unread=1` – vehicles whose plate nobody could read yet."""
+        from . import results as RS
+        a = request.args
+        c = open_case(cid)
+        out = []
+        for s in c.sources:
+            if not os.path.exists(os.path.join(c.source_dir(s.source_id), "analysis.db")):
+                continue
+            for p in RS.plates_search(c.source_dir(s.source_id), a.get("q", "")[:20], 1 if a.get("fuzzy") == "1" else 0,
+                                      int(_num(a.get("limit"), "limit", 1, 500, 200)), unread=a.get("unread") == "1"):
+                for k in ("crop", "enhanced"):
+                    p[k] = _case_rel(s.source_id, p[k])
+                out.append({**p, "source_id": s.source_id, "source_label": s.label,
+                            "calibrated_time": calibrate(p["time"], s.offset_for(p["camera"]))})
+        out.sort(key=lambda p: p["calibrated_time"] or "9999")
+        return jsonify(plates=out)
+
     def sighting_points(c: Case, d: dict) -> List[dict]:
         from .. import journey as J
         from ..reid import COLOR_NAMES

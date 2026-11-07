@@ -36,10 +36,14 @@ the black window into the browser.
   * **Follow face P0003** – the same face on every DVR (found by face similarity; the numbers differ
     between DVRs).
   * **Find this vehicle** – the plate on every DVR, also with one misread character.
+  * A plate the machine could not read with enough confidence says **not read** and shows the
+    machine's guess. **Type the plate** – type what you read (or *Not readable*); your reading
+    counts in searches and journeys and is kept in the audit log next to the machine's.
   * **Open in Forensic Studio at this moment**, **Add to court bundle**.
 * **Describe it**: type what you look for, e.g. *man in a red helmet on a motorbike*. The most
   similar pictures from all DVRs come first. **Clothing colours**: choose top and bottom colours.
-  **Number plate**: type a plate.
+  **Number plate**: type a plate. **Plates not read**: every vehicle of the case whose plate nobody
+  has read yet – type it, or enhance it in the Forensic Studio first.
 * Similarity ranks pictures for you to look at; it is not proof. Always look at the footage.
 
 ## A3. Journey
@@ -117,6 +121,7 @@ You can close the browser; the analysis continues while the black window is open
 * **Highlights**: one video per day with every movement in time order, in
   `highlights/<year>/<month>/` of the results folder. Click a line under the video to jump to it.
 * **Number plates**: type a plate (or part of one). *Tolerance 1* also finds plates read with one wrong character.
+  *Only vehicles whose plate was not read* lists the rest; *Type the plate* on a tile saves your reading.
 * **Faces**: one card per person. Yellow = first seen in the latest run.
 * **Fix recording times**: for folders analysed with an older version whose times look wrong.
 

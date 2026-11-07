@@ -171,6 +171,60 @@ def test_results_endpoints(analysed):
     assert c.get("/api/results/events/nope", query_string={"out": out}, headers=H()).status_code == 404
 
 
+def test_an_examiner_types_a_plate_and_that_reading_counts(analysed, tmp_path):
+    """The plate an examiner reads counts in searches and the event – next to the machine's read,
+    never overwriting it – and is audited; '' = examined, not readable; null removes it. A vehicle
+    whose plate the machine could not read confidently is listed under unread=1 with its guess.
+    Results written by an older version (no ocr_text column, opened read-only) still work."""
+    import shutil
+    import sqlite3
+    c = analysed["c"]
+    out = tmp_path / "copy"
+    shutil.copytree(analysed["out"], out, ignore=shutil.ignore_patterns("highlights", "reports"))
+    db = sqlite3.connect(out / "analysis.db")
+    eid, track, machine = db.execute("SELECT event_id, track, text FROM plates WHERE text != '' "
+                                     "ORDER BY confidence DESC").fetchone()
+    db.execute("INSERT INTO plates (event_id, track, vehicle, camera, dt, text, ocr_text, confidence, valid_format, "
+               "method) VALUES (?, 99, 'car', 'gate', '2026-10-31 09:30:05', '', 'MH12AE', 0.51, 0, 'ocr')", (eid,))
+    db.commit()
+    db.close()
+    q = {"out": str(out)}
+    url = f"/api/results/plates/{eid}/{track}"
+    unread = c.get("/api/results/plates", query_string={**q, "unread": "1"}, headers=H()).get_json()["plates"]
+    assert [(p["track"], p["text"], p["machine_text"], p["ocr_text"]) for p in unread] == [(99, None, None, "MH12AE")]
+    assert set(unread[0]) == {"event_id", "track", "text", "machine_text", "ocr_text", "confidence", "valid_format",
+                              "time", "camera", "vehicle", "crop", "enhanced", "watchlist", "reading"}   # minimal
+    r = c.put(url, query_string=q, json={"text": "mh12 ab-1243", "note": "read on the enhanced still"}, headers=H())
+    assert r.status_code == 200, r.get_json()
+    p = r.get_json()["plate"]
+    assert (p["text"], p["machine_text"], p["reading"]["text"]) == ("MH12AB1243", machine, "MH12AB1243")
+    found = c.get("/api/results/plates", query_string={**q, "q": "MH12AB1243", "edits": 0}, headers=H()).get_json()
+    assert [x["track"] for x in found["plates"]] == [track]
+    gone = c.get("/api/results/plates", query_string={**q, "q": machine, "edits": 0}, headers=H()).get_json()
+    assert (eid, track) not in {(x["event_id"], x["track"]) for x in gone["plates"]}   # the examiner's reading counts
+    d = c.get(f"/api/results/events/{eid}", query_string=q, headers=H()).get_json()
+    pd = next(x for x in d["plates"] if x["track"] == track)
+    assert pd["text"] == "MH12AB1243" and pd["machine_text"] == machine
+    audit = [json.loads(x) for x in open(out / "audit_log.jsonl", encoding="utf-8")]
+    a = [x for x in audit if x["action"] == "plate_reading"][-1]["details"]
+    assert (a["examiner_text"], a["machine_text"], a["track"]) == ("MH12AB1243", machine, track)
+    assert c.put(f"/api/results/plates/{eid}/99", query_string=q, json={"text": ""}, headers=H()).status_code == 200
+    assert c.get("/api/results/plates", query_string={**q, "unread": "1"}, headers=H()).get_json()["plates"] == []
+    r = c.put(url, query_string=q, json={"text": None}, headers=H())
+    assert r.status_code == 200 and r.get_json()["plate"]["text"] == machine and r.get_json()["plate"]["reading"] is None
+    for bad, code in (({"text": 5}, 400), ({"text": "!!!"}, 400), ({"text": "A" * 16}, 400)):
+        assert c.put(url, query_string=q, json=bad, headers=H()).status_code == code, bad
+    assert c.put(f"/api/results/plates/{eid}/12345", query_string=q, json={"text": "X1"}, headers=H()).status_code == 404
+    # results of an older version: no ocr_text column, never migrated (the app opens analysis.db read-only)
+    db = sqlite3.connect(out / "analysis.db")
+    db.execute("ALTER TABLE plates DROP COLUMN ocr_text")
+    db.commit()
+    db.close()
+    old = c.get(f"/api/results/events/{eid}", query_string=q, headers=H())
+    assert old.status_code == 200 and next(x for x in old.get_json()["plates"] if x["track"] == track)["text"] == machine
+    assert c.get("/api/results/plates", query_string={**q, "unread": "1"}, headers=H()).status_code == 200
+
+
 def test_file_serving_cannot_escape_the_output_folder(analysed, tmp_path):
     c, out = analysed["c"], str(analysed["out"])
     for p in ("../recordings/31Oct26New/" + os.listdir(analysed["inp"] / "31Oct26New")[0], "/etc/passwd",

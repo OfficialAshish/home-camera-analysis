@@ -319,9 +319,8 @@ async function openEvent(id) {
       e.flags.length ? el("ul", {}, e.flags.map(f => el("li", {}, el("b", { text: f.flag }), ` (+${f.points}) ${f.reason}`))) : el("p", { class: "hint", text: "No suspicious signs." }),
       e.clip ? el("video", { controls: "", preload: "metadata", src: fileUrl(out, e.clip) }) : null,
       el("div", { class: "gallery" }, e.snapshots.map(s => el("a", { href: fileUrl(out, s.annotated || s.raw), target: "_blank", rel: "noopener" }, el("img", { src: fileUrl(out, s.annotated || s.raw), title: s.time || "", loading: "lazy" })))),
-      e.plates.length ? el("div", {}, el("h3", { text: "Number plates" }), el("div", { class: "grid" }, e.plates.map(p => el("div", { class: "tile" },
-        p.crop ? el("img", { src: fileUrl(out, p.crop) }) : null, p.enhanced ? el("img", { src: fileUrl(out, p.enhanced), title: "enhanced" }) : null,
-        el("div", { class: "plate-text", text: p.text || "unreadable" }), el("div", { class: "small", text: `${p.vehicle} · confidence ${p.confidence}${p.valid_format ? "" : " · unusual format"}${p.watchlist ? " · WATCHLIST " + p.watchlist : ""}` }))))) : null,
+      e.plates.length ? el("div", {}, el("h3", { text: "Number plates" }), el("div", { class: "grid" }, e.plates.map(p =>
+        plateTile(p, (rel) => fileUrl(out, rel), resultsPlateSaver(out, () => openEvent(e.event_id)))))) : null,
       e.tracks.length ? el("div", {}, el("h3", { text: "People & objects" }), el("div", { class: "grid" }, e.tracks.filter(t => t.face || t.person).map(t => el("div", { class: "tile" },
         t.person ? el("img", { src: fileUrl(out, t.person) }) : null, t.face ? el("img", { src: fileUrl(out, t.face) }) : null,
         el("div", { text: `${t.cls} #${t.track} ${t.identity || ""}${t.watchlist ? " WATCHLIST " + t.watchlist : ""}` }))))) : null,
@@ -358,16 +357,53 @@ async function showDay(i) {
 // -------------------------------------------------------------- plates/faces
 $("pl-go").addEventListener("click", loadPlates);
 $("pl-q").addEventListener("keydown", (e) => { if (e.key === "Enter") loadPlates(); });
+$("pl-unread").addEventListener("change", loadPlates);
 async function loadPlates() {
   if (!S.resOut) { toast("Open a results folder first (Results tab).", true); return; }
-  const n = nextSeq("plates");
+  const n = nextSeq("plates"), out = S.resOut;
   try {
-    const r = await api("GET", "/api/results/plates?out=" + encodeURIComponent(S.resOut) + "&q=" + encodeURIComponent($("pl-q").value) + "&edits=" + $("pl-edits").value);
+    const q = new URLSearchParams({ out, q: $("pl-q").value, edits: $("pl-edits").value, unread: $("pl-unread").checked ? "1" : "" });
+    const r = await api("GET", "/api/results/plates?" + q);
     if (stale("plates", n)) return;
-    clear($("pl-list"), r.plates.length ? r.plates.map(p => el("div", { class: "tile", onclick: () => { showTab("results"); openEvent(p.event_id); } },
-      p.crop ? el("img", { src: fileUrl(S.resOut, p.crop) }) : null, el("div", { class: "plate-text", text: p.text }),
-      el("div", { class: "small", text: `${p.time || ""} · ${p.camera || ""} · ${p.vehicle} · ${p.confidence}${p.watchlist ? " · WATCHLIST" : ""}` }))) : [el("p", { class: "hint", text: "No plates found." })]);
+    clear($("pl-list"), r.plates.length ? r.plates.map(p => plateTile(p, (rel) => fileUrl(out, rel), resultsPlateSaver(out, loadPlates),
+      [el("button", { type: "button", text: "Open event", onclick: () => { showTab("results"); openEvent(p.event_id); } })])) :
+      [el("p", { class: "hint", text: $("pl-unread").checked ? "Every plate was read (by the machine or an examiner)." : "No plates found." })]);
   } catch (e) { toast(e.message, true); }
+}
+// ------------------------------------------------------------ one plate: what counts, the machine's read, the examiner's
+// A machine read below plate_min_confidence is never shown as the plate: the tile says "not read" and shows the
+// machine's guess next to it; an examiner types the plate (or marks it not readable) and that reading counts.
+function plateTile(p, imgUrl, save, extra) {
+  const shown = p.text || (p.reading ? "not readable" : "not read");
+  const who = p.reading ? `read by examiner ${p.reading.reviewer || ""} · ${(p.reading.updated || "").slice(0, 16).replace("T", " ")}` +
+      (p.machine_text ? ` · machine read ${p.machine_text}` : "") :
+    p.text ? `machine read · confidence ${p.confidence}${p.valid_format ? "" : " · unusual format"}` : "";
+  const guess = !p.machine_text && p.ocr_text ? `machine guess “${p.ocr_text}” (confidence ${p.confidence}) – too uncertain to report` : "";
+  const inp = el("input", { class: "mono plate-in", maxlength: "15", placeholder: p.ocr_text || "type the plate", value: p.reading ? p.reading.text : (p.text || "") });
+  const note = el("input", { class: "plate-note", maxlength: "300", placeholder: "how it was read (optional)", value: (p.reading && p.reading.note) || "" });
+  const run = async (btn, text) => {
+    busy(btn, true);
+    try { await save(p, text, note.value.trim()); toast(text === null ? "Reading removed." : text ? `Plate ${text.toUpperCase()} saved.` : "Marked as not readable."); }
+    catch (e) { toast(e.message, true); } finally { busy(btn, false); }
+  };
+  return el("div", { class: "tile plate", "data-plate": `${p.event_id}/${p.track}` },
+    p.crop ? el("img", { src: imgUrl(p.crop), alt: "plate" }) : null, p.enhanced ? el("img", { src: imgUrl(p.enhanced), alt: "enhanced plate", title: "enhanced" }) : null,
+    el("div", { class: "plate-text" + (p.text ? "" : " unread"), text: shown }),
+    who ? el("div", { class: "small", text: who }) : null, guess ? el("div", { class: "small hint plate-guess", text: guess }) : null,
+    el("div", { class: "small", text: [p.vehicle, p.camera, p.calibrated_time || p.time, p.watchlist ? "WATCHLIST " + p.watchlist : ""].filter(Boolean).join(" · ") }),
+    ...(extra || []),
+    el("details", { class: "plate-edit" }, el("summary", { text: p.reading ? "Change the reading" : "Type the plate" }), inp, note,
+      el("div", { class: "row" },
+        guess ? el("button", { type: "button", text: "Start from the guess", title: "copies the machine's guess into the box – check every character before saving", onclick: () => { inp.value = p.ocr_text; inp.focus(); } }) : null,
+        el("button", { type: "button", class: "primary", text: "Save", onclick: (ev) => { const t = inp.value.trim(); if (!t) { toast("Type the plate, or choose “Not readable”.", true); return; } run(ev.target, t); } }),
+        el("button", { type: "button", text: "Not readable", onclick: (ev) => run(ev.target, "") }),
+        p.reading ? el("button", { type: "button", text: "Remove reading", onclick: (ev) => run(ev.target, null) }) : null)));
+}
+function resultsPlateSaver(out, after) {
+  return async (p, text, note) => {
+    await api("PUT", `/api/results/plates/${encodeURIComponent(p.event_id)}/${p.track}?out=${encodeURIComponent(out)}`, { text, note });
+    after();
+  };
 }
 async function loadFaces() {
   if (!S.resOut) return;

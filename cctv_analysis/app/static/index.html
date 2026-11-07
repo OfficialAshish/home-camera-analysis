@@ -136,6 +136,7 @@
         <div><h3>Describe it</h3><div class="row"><input id="ts-q" placeholder="man in a red helmet on a motorbike"><button id="ts-go" class="primary" type="button">Search</button></div></div>
         <div><h3>Clothing colours</h3><div class="row"><label class="inline">Top <select id="pp-upper"></select></label><label class="inline">Bottom <select id="pp-lower"></select></label><button id="pp-go" type="button">Find people</button></div></div>
         <div><h3>Number plate</h3><div class="row"><input id="ps-q" placeholder="MH12AB1234"><label class="inline"><input type="checkbox" id="ps-fuzzy" checked> allow 1 wrong character</label><button id="ps-go" type="button">Find vehicle</button></div></div>
+        <div><h3>Plates not read</h3><div class="row"><button id="pu-go" type="button">Show vehicles whose plate was not read</button></div></div>
       </div>
       <div id="srch-out"></div>
     </div>
@@ -294,7 +295,8 @@
 
   <!-- ============================== PLATES -->
   <section id="tab-plates" class="tab">
-    <div class="card"><div class="row"><input id="pl-q" placeholder="plate, part of a plate, or blank for all"><label class="inline">tolerance <select id="pl-edits"><option>0</option><option selected>1</option><option>2</option></select></label><button id="pl-go" class="primary">Search</button></div>
+    <div class="card"><div class="row"><input id="pl-q" placeholder="plate, part of a plate, or blank for all"><label class="inline">tolerance <select id="pl-edits"><option>0</option><option selected>1</option><option>2</option></select></label><button id="pl-go" class="primary">Search</button><label class="inline"><input type="checkbox" id="pl-unread"> only vehicles whose plate was not read</label></div>
+      <p class="hint">A machine read below the confidence limit is not reported as the plate: such vehicles say “not read” with the machine's guess. Type the plate you read on the picture (or mark it not readable); your reading counts in searches, journeys and evidence exports (and in the Excel report the next time it is built), always next to the machine's.</p>
       <div id="pl-list" class="grid"></div></div>
   </section>
 

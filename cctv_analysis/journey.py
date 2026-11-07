@@ -212,12 +212,14 @@ def sightings(case: Case, kind: str, value: str = "", query: Optional[dict] = No
                                           r["duration"], r["person_crop"], r["face_crop"], "",
                                           sims.get(r["identity"]), r["rel_path"], r["start_off"]))
                 else:
+                    from .reviews import effective_plate, plate_readings
                     norm = normalize(v)
-                    rows = db.execute("SELECT p.event_id, p.track, p.dt, p.t_off, p.text, p.crop_path, p.confidence, "
-                                      "e.camera, e.rel_path, e.start_off FROM plates p JOIN events e USING(event_id) "
-                                      "WHERE p.text != ''").fetchall()
+                    readings = plate_readings(s["out_dir"])         # an examiner's reading counts over the machine's
+                    rows = [effective_plate(dict(x), readings) for x in db.execute(
+                        "SELECT p.event_id, p.track, p.dt, p.t_off, p.text, p.crop_path, p.confidence, e.camera, "
+                        "e.rel_path, e.start_off FROM plates p JOIN events e USING(event_id)")]
                     for r in rows:
-                        if r["text"] == norm or (fuzzy and within_edits(r["text"], norm, 1)):
+                        if r["text"] and (r["text"] == norm or (fuzzy and within_edits(r["text"], norm, 1))):
                             pts.append(_point(s, r["event_id"], r["track"], r["camera"], r["dt"], r["t_off"], 2.0,
                                               r["crop_path"], "", r["text"], r["confidence"], r["rel_path"],
                                               r["start_off"]))

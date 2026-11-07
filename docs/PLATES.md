@@ -11,6 +11,7 @@ Status: **current** · Code: `cctv_analysis/plates.py` · Tests: `tests/test_pla
 | `plate_watchlist` | Plate watchlist | – | alert `watchlist_plate` (+50) on a match within `plate_watchlist_max_edits` (1) |
 | `plate_region` | – | `IN` | Indian formats (state + RTO + series + 4 digits, BH series); `any` disables format rules |
 | `plate_reads_per_track` | – | 6 | best observations re-read per vehicle track |
+| `plate_min_confidence` | – | 0.6 | a fused read below this is **not read** (the plate stays empty; the machine's guess is kept separately) |
 
 ## How a plate is read
 1. During detection every vehicle track keeps its best observations (confidence × size × sharpness).
@@ -27,9 +28,29 @@ Status: **current** · Code: `cctv_analysis/plates.py` · Tests: `tests/test_pla
 5. Format fit: at most **one** letter↔digit substitution is accepted (e.g. `MHI2AB1234` →
    `MH12AB1234`, fit 0.75); anything needing more is treated as "not a plate" (fit 0.3) so a
    truncated read is never turned into a plausible wrong plate.
-6. All reads vote character by character, weighted by confidence × fit. Partial reads (e.g. a car
-   cut by the frame edge, `MH12`) stay in the `plates` table as evidence but are not reported in
-   event summaries or matched against the watchlist.
+6. All reads vote character by character, weighted by confidence × fit.
+7. **Reported or not read.** A fused read is the plate only when its confidence is at least
+   `plate_min_confidence` (0.6) **and** it is a whole plate (a valid format, or at least 6
+   characters). Anything less – a partial read of a car cut by the frame edge (`MH12AE`, 0.51 in
+   the test video), a deblurred read at 0.57 – is *not read*: the `plates` row keeps `text = ''`,
+   raises no watchlist alert and is not in the event's plates; the machine's best guess is kept in
+   `ocr_text` and the plate's position in `box` (`[x1, y1, x2, y2, frame width, frame height]`,
+   full-resolution pixels) for the Forensic Studio. Before this rule a valid-format read was
+   reported at any confidence.
+
+## Examiner readings
+Every plate tile (event detail, *Number plates* tab, case search *Plates not read*) shows what
+counts – an examiner's reading, else the confident machine read, else "not read" with the guess –
+and *Type the plate*: the examiner types what they read (or marks it *Not readable*, or removes
+their reading). Readings are stored in `reviews.db` (`plate_readings`; analysis.db is never
+edited), written to the folder's audit log – and the case audit log for case sources – with the
+machine read and guess next to them, and they count in plate searches, case sightings / journeys,
+evidence exports (`event.json` keeps `text` = the machine read and adds `examiner_reading`) and
+the Excel *Number Plates* sheet (columns *Plate*, *Read by*, *Machine read*, *Machine guess*).
+API: `PUT /api/results/plates/<event>/<track>?out=…` and `PUT /api/cases/<case>/plates/<source>/<event>/<track>`
+with `{"text": "MH12AB1234" | "" | null, "note": "…"}`; `GET …/plates?unread=1` lists the
+vehicles nobody has read. A reading does not re-run the watchlist (alerts are made during the
+analysis).
 
 ## Measured accuracy (synthetic but realistic test, this repository's machine)
 Video: a real car photo (`tests/assets/car_rear.png`, MIT) with an Indian plate `MH12AB1234`
@@ -55,8 +76,11 @@ Reading the table honestly:
 * Sharp plates ≥ ~70 px wide are read reliably without enhancement.
 * Enhancement recovers moderate motion blur (5–9 px at ~96 px width; 9 px at ~72 px) that plain
   OCR cannot read at all. It does **not** recover 15 px blur or plates of ~56 px.
-* A wrong result can still carry a plausible format. Confidence below ~0.6 means "check by eye":
-  the app and the *Number Plates* sheet show the plate crop and the enhanced image next to the text.
+* A wrong result can still carry a plausible format. With `plate_min_confidence` 0.6 the reads
+  above that are reported (0.71, 0.989, 0.998 correct; 0.92 and 0.60 at ~56 px wrong – one
+  character), everything below is "not read" with the guess shown for the examiner (0.57 and 0.33
+  correct guesses, 0.34 a wrong one). The app and the sheet show the plate crop and the enhanced
+  image next to the text; an examiner confirms or corrects it.
 * At ~56 px the OCR misreads one character consistently with high confidence (0.92); consistent
   identical reads stop the deblur search early, so enhancement does not help there. Use a camera
   with more pixels on the plate (zoom / closer mounting) for gates and entrances.

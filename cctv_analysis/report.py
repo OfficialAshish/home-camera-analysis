@@ -203,8 +203,10 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
                        "<date>_timeline.srt next to the video) map reel time → camera, clock time, video + offset."),
         ("Recording time", "'Time source' says where each time came from: filename, osd(...) = the DVR clock read "
                            "from the picture, metadata, or file-modified(approx). Approximate times are marked."),
-        ("Number plates", "The 'Number Plates' sheet lists every plate read, with confidence, the plate image and "
-                          "(when enhancement is on) the enhanced image. Check low-confidence reads by eye."),
+        ("Number plates", "The 'Number Plates' sheet lists every vehicle whose plate was looked at. 'Plate' is what "
+                          "counts: an examiner's reading, else a confident machine read, else 'not read' (the "
+                          "machine's guess below the confidence limit is shown separately, never as the plate). "
+                          "With the plate image and (when enhancement is on) the enhanced image."),
         ("Weekly files", "reports/<year>/<dd-dd-Mon-yyyy-W##>.xlsx contain one week each; CCTV_Report.xlsx has "
                          "everything. Unique_Faces.xlsx lists every distinct face with NEW ones highlighted."),
     ]
@@ -556,23 +558,36 @@ def build_excel(store, cfg, path, start=None, end=None, link_base=None, title="C
 
     # ---------------------------------------------------------- Number plates
     ws = wb.add_worksheet("Number Plates")
-    cols = [("Plate", 14), ("Confidence", 9), ("Format OK", 8), ("Time", 19), ("Camera", 10), ("Vehicle", 9),
+    cols = [("Plate", 14), ("Read by", 16), ("Machine read", 13), ("Machine guess (not confident)", 14),
+            ("Confidence", 9), ("Format OK", 8), ("Time", 19), ("Camera", 10), ("Vehicle", 9),
             ("Event ID", 26), ("Video file", 34), ("Video offset", 10), ("Watchlist match", 14), ("Method", 16),
-            ("Reads", 6), ("Plate image", 22), ("Enhanced image", 22), ("Plate file", 8), ("Enhanced file", 8)]
+            ("Reads", 6), ("Examiner note", 24), ("Plate image", 22), ("Enhanced image", 22), ("Plate file", 8),
+            ("Enhanced file", 8)]
     for c, (h, w) in enumerate(cols):
         ws.write(0, c, h, F["h"])
         ws.set_column(c, c, w)
     w_, a_ = _range_sql(start, end, "p.dt")
-    plates = store.query("SELECT p.*, e.rel_path FROM plates p JOIN events e USING(event_id)" + w_ +
-                         (" AND" if w_ else " WHERE") + " p.text != '' ORDER BY p.dt", a_)
+    from .reviews import plate_readings
+    readings = plate_readings(cfg.output_dir)
+    # every vehicle whose plate was looked at: confident machine reads, examiners' readings, and the
+    # vehicles nobody could read yet (their plate cell says so; the machine's guess is next to it)
+    plates = store.query("SELECT p.*, e.rel_path FROM plates p JOIN events e USING(event_id)" + w_ + " ORDER BY p.dt", a_)
     for i, p_ in enumerate(plates, 1):
-        ws.write_row(i, 0, [p_["text"], p_["confidence"], "yes" if p_["valid_format"] else "no", p_["dt"] or "",
-                            p_["camera"], p_["vehicle"], p_["event_id"], p_["rel_path"], V.fmt_offset(p_["t_off"] or 0),
-                            p_["watchlist"] or "", p_["method"], p_["n_reads"]], F["top"])
-        image(ws, i, 12, p_["crop_path"], 150)
-        image(ws, i, 13, p_["enhanced_path"], 150)
-        link(ws, i, 14, _rel(p_["crop_path"], out), "plate" if p_["crop_path"] else "")
-        link(ws, i, 15, _rel(p_["enhanced_path"], out), "enhanced" if p_["enhanced_path"] else "")
+        rd = readings.get((p_["event_id"], int(p_["track"])))
+        machine = p_["text"] or ""
+        guess = (p_.get("ocr_text") or "") if not machine else ""
+        if rd is not None:
+            plate, by = rd["text"] or "not readable", f"examiner {rd['reviewer'] or ''} {rd['updated'][:16]}".strip()
+        else:
+            plate, by = machine or "not read", "machine" if machine else ""
+        ws.write_row(i, 0, [plate, by, machine, guess, p_["confidence"], "yes" if p_["valid_format"] else "no",
+                            p_["dt"] or "", p_["camera"], p_["vehicle"], p_["event_id"], p_["rel_path"],
+                            V.fmt_offset(p_["t_off"] or 0), p_["watchlist"] or "", p_["method"], p_["n_reads"],
+                            (rd or {}).get("note") or ""], F["top"])
+        image(ws, i, 16, p_["crop_path"], 150)
+        image(ws, i, 17, p_["enhanced_path"], 150)
+        link(ws, i, 18, _rel(p_["crop_path"], out), "plate" if p_["crop_path"] else "")
+        link(ws, i, 19, _rel(p_["enhanced_path"], out), "enhanced" if p_["enhanced_path"] else "")
         ws.set_row(i, 48)
     if plates:
         ws.autofilter(0, 0, len(plates), len(cols) - 1)

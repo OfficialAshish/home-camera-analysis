@@ -145,10 +145,11 @@ def edit_distance(a: str, b: str) -> int:
     return prev[-1]
 
 
-def is_reportable(text: str, confidence: float, valid_format: bool) -> bool:
-    """Shown in event summaries / matched against the watchlist. Partial reads (vehicle cut by
-    the frame edge, 'MH12') stay in the plates table as evidence but are not reported."""
-    return bool(text) and (valid_format or (len(text) >= 6 and confidence >= 0.7))
+def is_reportable(text: str, confidence: float, valid_format: bool, min_confidence: float = 0.6) -> bool:
+    """A read good enough to show as the plate and match against the watchlist: confident
+    (``plate_min_confidence``) and a whole plate (a valid format, or at least 6 characters).
+    Anything less is "not read" – the machine's guess is kept as ocr_text for an examiner."""
+    return bool(text) and confidence >= min_confidence and (valid_format or len(text) >= 6)
 
 
 def within_edits(a: str, b: str, k: int) -> bool:
