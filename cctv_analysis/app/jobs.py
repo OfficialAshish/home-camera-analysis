@@ -64,6 +64,8 @@ class Job:
 
     @staticmethod
     def _percent(p) -> float:
+        if p.get("sources"):              # a case run: investigation.run_case reports the overall percent
+            return float(p.get("percent", 0) or 0)
         st = p.get("stage")
         if st == "planning" and p.get("total"):
             return round(5.0 * p.get("index", 0) / p["total"], 1)

@@ -1,15 +1,52 @@
 # Desktop app
 
-Status: **current** · Code: `cctv_analysis/app/` · Tests: `tests/test_app_api.py`, `tests/test_ui_playwright.py`,
-`tests/test_guards_unit.py` · Packaging: `packaging/`
+Status: **current** · Code: `cctv_analysis/app/` (`server.py` single-folder screens and guards, `case_api.py` case
+screens, `common.py` request helpers, `static/app.js` + `static/case.js`) · Tests: `tests/test_app_api.py`,
+`tests/test_case_api.py`, `tests/test_ui_playwright.py`, `tests/test_ui_cases_playwright.py`, `tests/test_guards_unit.py`
+· Packaging: `packaging/`, `run_app.bat`
 
 ## Running
 * From source: `pip install -r requirements.txt` then `python -m cctv_analysis.app`
   (`--port`, `--no-browser`, `--data-dir`, `--self-test`).
+* **One click (Windows, source checkout): `run_app.bat`.** It uses the first Python that has the
+  packages (`.venv\` next to it, `python`, `py -3`), otherwise finds Python 3.10+ and offers to
+  install everything into `.venv\` (CPU PyTorch + `requirements.txt`); puts `packaging\ffmpeg\`
+  on PATH when present, warns when ffmpeg is missing, then starts the app (the browser opens on the
+  private link). `run_app.bat --self-test` runs the installation check and exits with its result –
+  the *windows-app* CI job runs it.
 * Packaged: `CCTVAnalysis.exe` (built by `packaging/build_windows.ps1`, or the *windows-app* CI
   job artifact). A console window shows the private link; closing it stops the app.
 
 ## Screens
+The app opens on **Quick investigation**. Case screens (Drishti-AI, docs/CASES.md):
+* **Quick investigation** – drop the seized DVR/NVR/pen-drive folders on the page (or *Add
+  folder…*: the system folder dialog where one can open, else the built-in browser), a clock
+  correction per folder, optional FIR / police station / officer, *Balanced* or *Fast*,
+  describe-it search / faces / plates, **Run investigation**: one request creates the case, adds
+  every folder and starts the run (everything is validated first; nothing is created on error).
+* **Cases** – list, new case, case details, one card per source (label, folder, availability,
+  clock and per-camera corrections, status: files hashed, events, person tracks, playback copies,
+  describe-it search; device particulars and Part A declarant for the certificate; map position;
+  *Relink…* when the drive letter changed; *Remove*), *Analyse all sources*, the case audit log.
+  The cases folder can be moved to another disk (*Change…*).
+* **Timeline & search** – all events of all sources on the calibrated clock (lanes per source and
+  cards with calibrated and DVR time), event detail (the recording played from its playback copy,
+  people, plates, snapshots; *Find this person on all cameras*, *Follow face*, *Find this
+  vehicle*, *Open in Forensic Studio at this moment*, *Add to court bundle*), and three searches
+  over the whole case: *Describe it* (SigLIP-2), *Clothing colours* (top/bottom), *Number plate*.
+* **Journey** – the sightings of the search in calibrated order with tick boxes (untick wrong
+  matches → *Rebuild journey*), the route as a flow of camera stops with travel times, an offline
+  map when the sources have positions (latitude/longitude or site-plan x/y; nothing is fetched
+  from the internet), *Make highlight reel*, *Add ticked to court bundle*.
+* **Forensic Studio** – the original frame decoded from the recording at the chosen time
+  (lossless PNG), filters with live preview (debounced, latest result wins), four-corner
+  perspective by clicking the original, multi-frame stacking (3–9 frames, ECC alignment), *Save*
+  (PNG + filter log + hashes, checked to reproduce bit for bit), saved stills of the case.
+* **Court bundle** – the chosen records and stills, Part A per device and Part B (kept for the next
+  export, audited), *Preview certificate* per device (printable page), *Create court bundle*
+  (one certificate per device), the case's exports with SHA-256 and *Verify*.
+
+Single-folder screens (unchanged, for one DVR without a case):
 1. **Set up** – recordings folder and results folder (built-in folder browser; *System dialog*
    when tkinter is available), speed preset, feature switches with time-cost badges
    (rendered from `app/features.py`, keys = `Config` fields), *Check computer* (CPU, RAM, GPU,
@@ -45,12 +82,21 @@ Status: **current** · Code: `cctv_analysis/app/` · Tests: `tests/test_app_api.
 | One analysis at a time; `request_id` makes start idempotent | `JobManager` | `test_one_analysis_at_a_time_and_idempotent_start` |
 | API key stored in `secrets.json` (0600), never returned | `Settings` | `test_settings_never_return_the_api_key` |
 | No stack traces to the browser | `errorhandler(Exception)` | – |
+| Case media (`/api/cases/<id>/file`, `/video`, `/frame`, `/certificate`, `/exports/<name>`) are the only case routes a cookie alone may load | `case_api.is_media`, `server.guard` | `test_case_routes_need_the_token_and_the_cookie_loads_media_only` |
+| Case files only from inside the case folder; recordings only those listed in the source's acquisition record | `common.inside`, `case_video` | `test_case_files_cannot_escape_the_case_folder`, `test_recordings_play_from_their_lossless_copy_and_only_ingested_files_are_served` |
+| Quick investigation validates every folder, offset, preset and option before creating anything | `case_quick`, `run_request` | `test_quick_investigation_checks_every_folder_before_creating_anything` |
+| The printable certificate page runs no script at all (`default-src 'none'; style-src 'unsafe-inline'`) | `case_certificate` | `test_court_bundle_has_one_certificate_per_device_and_verifies` |
+| A relinked source must hold the acquired recordings (same size and SHA-256) | `Case.relink_source` | `test_relink_moves_a_source_only_to_a_folder_with_the_same_recordings` |
+| Responses carry case-relative paths, never absolute paths of the computer | `case_api._public_point`, `_case_rel` | `test_people_by_clothing_colour_and_appearance_search_across_cameras` |
+| Forensic Studio previews have their own write budget (300/min) so sliders do not hit the 60/min limit | `server.guard` | – |
 Each guard is also checked by `tools/mutation_check.py` (removing it must make its test fail).
 
 ## Data locations
 `--data-dir` (default `%APPDATA%\CCTVAnalysis`, `~/Library/Application Support/CCTVAnalysis`,
 `~/.local/share/cctv-analysis`): `settings.json`, `secrets.json`, `license/`, `models/`,
-`work/<hash>/` (working database per results folder), `audit_log.jsonl` (licence actions).
+`work/<hash>/` (working database per results folder), `audit_log.jsonl` (licence actions, cases
+folder changes), `cases/` (default cases folder; *Cases › Change…* moves new work to another disk,
+e.g. a large `D:` – a case's playback copies are as large as its originals).
 Per results folder: `analysis.db`, `reviews.db`, `audit_log.jsonl`, `exports/`, reports.
 
 ## Packaging

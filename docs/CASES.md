@@ -59,3 +59,57 @@ within 3 s of the truth. Without corrections the route is B → C → A; with `-
 `+00:05:00`, `0` it is A → B → C (21:14 → 21:18 → 21:23), and the journey reports 4–5 minutes
 between cameras. The MP4 needs no copy; the `.264` and `.ts` remuxes keep all 350 packets and
 decode to identical pixels.
+
+## Finding one person, face or vehicle across the case (`journey.sightings`)
+* **Appearance** (clothing, build): the person re-ID index of every source (docs/REID.md); the
+  officer picks a person track and gets every track above the score, optionally only those whose
+  top/bottom colour names match.
+* **Face**: face identity numbers (`P0001` …) are given **per source** by that source's own
+  clustering, so `P0003` of one DVR and `P0003` of another are unrelated people. A face picked in
+  one source is found in the others by face similarity (SFace cosine ≥ `face_match_threshold`,
+  0.42) against their identities (`journey.face_identities`); each sighting carries that
+  similarity. Names enrolled from a known-faces folder are the same everywhere. Measured in
+  `tests/test_case_sightings.py`: Lena is the Shop DVR's P0001 and the Bank DVR's P0002 (Messi is
+  the Bank's P0001); following the Shop's P0001 finds Lena in the Bank (similarity ≥ 0.42) and
+  never Messi; the old "same number = same person" rule is reproduced as a mutation and fails.
+* **Plate**: exact text, or within one character (`plates.within_edits`), normalised the same way
+  as everywhere else (`plates.normalize`: `mh 12 ab-1234` = `MH12AB1234`).
+* **List**: the sightings the officer kept (unticked wrong matches are left out).
+
+## Drives change letters, cases move
+A seized pen drive that was `E:` yesterday is `F:` today; a case folder is copied to the forensic
+lab's computer. Paths stored at analysis time are then stale:
+* pictures of the analysis (snapshots, crops) are found under the case's current folder
+  (`storage.resolve`: the longest trailing part of the stored path that exists there);
+* recordings are always taken from the source's **current** folder (`Source.recording(rel_path)`),
+  never from the absolute path stored at analysis time;
+* **Relink** (`Case.relink_source`, *Cases › source › Relink…*) points a source at its folder's new
+  location only if every recording of the acquisition record is there with the same size and the
+  same SHA-256 (or the same size only, when chosen); otherwise nothing changes and the differences
+  are listed. Audited as `source_relinked` with the old and new path.
+`tests/test_multi_folder_ingest.py::test_a_moved_case_and_a_new_drive_letter_keep_working` moves a
+case and its seized folders, checks pictures, refuses a wrong folder and a one-byte change, relinks
+and builds a highlight reel from the new place.
+
+## Trial licence
+Without a licence a run analyses at most `TRIAL_MAX_VIDEOS` (5) videos **in total over all sources
+of the case** (`run_case(max_videos_total=…)`), not 5 per source; hashing and playback copies are
+never limited. A source left out says so (`skipped`).
+
+## App endpoints (`cctv_analysis/app/case_api.py`)
+| Method and path | Purpose |
+|---|---|
+| `GET /api/cases` · `POST /api/cases` | list (and the cases folder) · create |
+| `POST /api/cases/quick` | Quick investigation: folders + details → case, sources, run (all validated first) |
+| `GET/PUT /api/cases/<id>` | case with per-source status · edit details, `expert` (Part B) |
+| `POST /api/cases/<id>/sources` · `PUT/DELETE …/sources/<sid>` | add · edit label, offsets, device, Part A declarant, location · remove |
+| `POST …/sources/<sid>/relink` | job: verify and relink a moved source |
+| `POST /api/cases/<id>/run` | job: ingest + analyse + index every (or the chosen) source |
+| `GET …/timeline` · `GET …/events/<sid>/<eid>` | cross-camera timeline · one event with both times |
+| `POST …/sightings` · `GET …/people` · `POST …/text-search` | sightings + journey · people by clothing colour · describe-it search |
+| `GET …/video` · `GET …/frame` · `GET …/file` | recording (playback copy) · original frame (PNG) · a file of the case |
+| `POST …/enhance/preview` · `POST …/enhance/save` · `GET …/enhancements` · `GET /api/enhance/filters` | Forensic Studio |
+| `POST …/reel` · `POST …/bundle` · `GET …/exports[/<name>]` · `POST …/exports/<name>/verify` | jobs: highlight reel, court bundle · downloads · verification |
+| `GET …/certificate?source=` · `GET …/audit` | printable certificate preview · case audit log |
+| `POST /api/fs/locate` | where a dropped folder is (by its name and the sizes of its files) |
+Responses carry paths relative to the case folder; files are served by `…/file?p=`.

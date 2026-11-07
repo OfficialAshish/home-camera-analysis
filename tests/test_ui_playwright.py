@@ -85,6 +85,8 @@ def test_full_user_flow(server):
         page.on("response", lambda r: failed.append(f"{r.status} {r.url}") if r.status >= 500 else None)
         page.goto(server["url"] + "/?t=ui-token")
         expect(page.locator("#licbadge")).to_have_text("Trial")
+        expect(page.locator("#tab-quick")).to_be_visible()          # Drishti-AI opens on Quick investigation
+        page.click("#tabs button[data-tab=setup]")
 
         # --- pick the recordings folder with the built-in folder browser
         page.click("#in-browse")

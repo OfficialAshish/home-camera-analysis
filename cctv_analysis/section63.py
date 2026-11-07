@@ -406,19 +406,21 @@ def build_bundle(case: Case, items: List[dict], dest_zip: str, part_a: Optional[
             off = src.offset_for(e["camera"])
             d = os.path.join(tmp, "originals", sid)
             os.makedirs(d, exist_ok=True)
-            ext = os.path.splitext(e["video_path"])[1] or ".mp4"
+            video = src.recording(e["rel_path"])
+            ext = os.path.splitext(video)[1] or ".mp4"
             name = f"{eid}{ext}"
             dur = float(e["end_off"] or 0) - float(e["start_off"] or 0)
-            if not os.path.exists(e["video_path"]):
-                raise FileNotFoundError(f"source recording not available: {e['video_path']} (is the drive plugged in?)")
-            if not _cut_original(e["video_path"], e["start_off"], e["end_off"], os.path.join(d, name)):
+            if not os.path.exists(video):
+                raise FileNotFoundError(f"source recording not available: {video} (is the drive plugged in? if it "
+                                        "has another drive letter now, relink the source)")
+            if not _cut_original(video, e["start_off"], e["end_off"], os.path.join(d, name)):
                 raise RuntimeError(f"could not cut the original segment of {eid}")
             meta = {"source_id": sid, "source_label": src.label, "event_id": eid, "camera": e["camera"],
                     "dvr_start": e["start_dt"], "dvr_end": e["end_dt"],
                     "calibrated_start": calibrate(e["start_dt"], off), "calibrated_end": calibrate(e["end_dt"], off),
                     "clock_offset": format_offset(off), "time_source": e["time_source"],
                     "source_file": e["rel_path"], "source_offsets": [e["start_off"], e["end_off"]],
-                    "source_file_sha256": sha256_file(e["video_path"]),
+                    "source_file_sha256": sha256_file(video),
                     "note": "stream copy of the recording (not re-encoded); it may begin a few seconds before the "
                             "event start (keyframe boundary)"}
             ej = os.path.join(tmp, "events", sid, f"{eid}.json")

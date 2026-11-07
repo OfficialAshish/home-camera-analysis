@@ -60,3 +60,18 @@ def test_trial_limit_applies_only_without_a_valid_licence():
     assert L.apply_limits(Config(max_videos=50), trial).max_videos == L.TRIAL_MAX_VIDEOS
     ok = L.LicenseStatus(True, "LICENSED", "")
     assert L.apply_limits(Config(max_videos=0), ok).max_videos == 0
+
+
+def test_case_run_progress_is_the_overall_percent_not_one_source_s():
+    """run_case reports 'source 2 of 4, video 1 of 2 of that source' with the overall percent;
+    the job must not replace it by the per-source video percentage (the bar jumped backwards)."""
+    from cctv_analysis.app.jobs import Job
+    j = Job("analysis")
+    j.started = time.time() - 10
+    j.update({"stage": "video", "index": 1, "total": 2, "source_index": 2, "sources": 4, "percent": 30.0})
+    assert j.progress["percent"] == 30.0 and j.progress["eta_seconds"] == int(10 / 30 * 70)
+    j.update({"stage": "video", "index": 2, "total": 2, "source_index": 2, "sources": 4, "percent": 40.0})
+    assert j.progress["percent"] == 40.0
+    single = Job("analysis")
+    single.update({"stage": "video", "index": 2, "total": 2})                 # a single-folder run is unchanged
+    assert single.progress["percent"] == 47.5

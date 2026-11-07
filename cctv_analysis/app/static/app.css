@@ -55,3 +55,33 @@ video{width:100%;max-height:68vh;background:#000;border-radius:8px}
 .toast.err{background:#c62828}
 .start{display:flex;align-items:center;gap:16px}
 @media (max-width:760px){.field{grid-template-columns:1fr}.formgrid{grid-template-columns:1fr}.formgrid .wide{grid-column:1}}
+/* ---- Drishti-AI case screens */
+.brand .sub{font-weight:400;font-size:12px;opacity:.85;margin-left:4px}
+.navsep{width:1px;background:#ffffff55;margin:2px 6px}
+.casepick{display:flex;align-items:center;gap:6px;font-size:12px}.casepick select{max-width:230px;padding:4px 6px}
+.dropzone{border:2px dashed #9fb0cc;border-radius:10px;padding:22px;text-align:center;background:#f7f9fd}
+.dropzone.over,#cs-detail.over{border-color:#1f6feb;background:#eaf2ff}
+.row.center{justify-content:center}
+.source{border:1px solid #e1e5ec;border-radius:8px;padding:8px 10px;margin:8px 0;background:#fbfcfe}
+.source.missing{border-color:#e57373;background:#fff5f5}
+.w-label{width:220px!important;flex:0 0 auto!important;min-width:0!important}.w-off{width:110px!important}.w-num{width:80px}
+.lanes{overflow-x:auto;margin:6px 0}.lanesvg{width:100%;min-width:700px;height:auto}
+.lane{fill:#f1f4f9}.lanelabel{font-size:12px;fill:#1d2433}.axis{font-size:11px;fill:#5b6478}
+.tick{fill:#9aa7bd;cursor:pointer}.tick.lv-HIGH{fill:#e53935}.tick.lv-REVIEW{fill:#fb8c00}.tick.lv-LOW{fill:#fdd835}.tick.lv-NORMAL{fill:#7cb342}
+.tick:hover{stroke:#1d2433;stroke-width:1.5}
+.searchgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:4px 18px}
+.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}
+.stop{border:2px solid #1f6feb;border-radius:10px;padding:8px;width:190px;text-align:center;background:#fff;position:relative}
+.stop img{width:100%;border-radius:5px;max-height:120px;object-fit:contain;background:#000}
+.stop .n{position:absolute;top:-10px;left:-10px;background:#1f6feb;color:#fff;border-radius:50%;width:24px;height:24px;line-height:24px;font-weight:700}
+.arrow{font-weight:700;color:#1f6feb;white-space:nowrap}
+.mapsvg{width:100%;max-width:760px;background:#f4f7fb;border:1px solid #e1e5ec;border-radius:8px}
+.route{fill:none;stroke:#1f6feb;stroke-width:3;stroke-dasharray:6 4}.stopdot{fill:#1f6feb}.stopn{fill:#fff;font-weight:700;font-size:13px}
+.stoplabel{font-size:12px;fill:#1d2433}
+.studio{display:grid;grid-template-columns:1fr 1fr;gap:14px}.studio img{width:100%;background:#000;border-radius:6px;min-height:80px}
+.imgwrap{position:relative}#fx-orig{cursor:crosshair}
+.fstep{border:1px solid #e1e5ec;border-radius:6px;padding:5px 8px;margin:4px 0;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+tr.off{opacity:.45}img.thumb{width:72px;border-radius:4px;vertical-align:middle}
+.enh{border:1px solid #e1e5ec;border-radius:6px;padding:3px 6px;margin:3px}
+.choose button{margin:3px 0}
+@media (max-width:900px){.studio{grid-template-columns:1fr}}

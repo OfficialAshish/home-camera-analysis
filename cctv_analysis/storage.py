@@ -4,9 +4,52 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import sqlite3
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
+
+
+def _inside(out_dir: str, full: str) -> Optional[str]:
+    try:
+        r = os.path.relpath(os.path.abspath(full), os.path.abspath(out_dir))
+    except ValueError:                       # another drive on Windows
+        return None
+    return None if r == ".." or r.startswith(".." + os.sep) or r.startswith("../") else r.replace(os.sep, "/")
+
+
+def resolve(out_dir: str, p: Optional[str]) -> str:
+    """Where a file the analysis stored is now ('' if nowhere).
+
+    Paths are stored absolute. When the output folder has moved – the external disk got
+    another drive letter, the case was copied to another computer – the stored prefix is stale;
+    the longest trailing part of the stored path that exists under `out_dir` is the file."""
+    if not p:
+        return ""
+    if not (os.path.isabs(p) or re.match(r"^[A-Za-z]:[\\/]|^\\\\", p)):        # also a Windows path read elsewhere
+        full = os.path.join(out_dir, p)
+        return full if os.path.exists(full) else ""
+    if os.path.exists(p):
+        return p
+    parts = [x for x in re.split(r"[\\/]+", p) if x]
+    for i in range(1, len(parts)):
+        cand = os.path.join(out_dir, *parts[i:])
+        if os.path.exists(cand):
+            return cand
+    return ""
+
+
+def rel_to(out_dir: str, p: Optional[str]) -> str:
+    """A path stored in analysis.db as a path relative to the output folder (for the app's file
+    route), with '/' separators; '' when missing or outside it. Follows a moved folder."""
+    if not p:
+        return ""
+    r = _inside(out_dir, p if os.path.isabs(p) else os.path.join(out_dir, p))
+    if r is None:
+        moved = resolve(out_dir, p)
+        r = _inside(out_dir, moved) if moved else None
+    return r or ""
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (

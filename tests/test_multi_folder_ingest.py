@@ -171,6 +171,66 @@ def test_case_inputs_are_validated(case_run, tmp_path):
     assert store.list()[0]["sources"] == 3
 
 
+def test_the_trial_limit_counts_videos_of_the_whole_run(case_run):
+    """A trial job analyses at most N videos – across all sources of the case, not N per source."""
+    c, truth, res, tmp = case_run
+    again = run_case(c, OPTS, preset="fast", work_root=str(tmp / "work"), model_cache_dir=MODELS, max_videos_total=2)
+    got = again["sources"]
+    assert "stats" in got["shopa-dvr"] and "stats" in got["trafficcam-north"]
+    assert "stats" not in got["jeweler-nvr"] and "trial limit" in got["jeweler-nvr"]["skipped"]
+    assert got["jeweler-nvr"]["files"] == 1                       # hashing (ingest) is never limited
+    assert run_case(c, OPTS, preset="fast", work_root=str(tmp / "work"), model_cache_dir=MODELS,
+                    analyse=False)["sources"]["jeweler-nvr"].get("skipped") is None
+
+
+def test_a_moved_case_and_a_new_drive_letter_keep_working(case_run, tmp_path):
+    """The case folder moves to another disk and the seized drive comes back with another letter:
+    stored absolute paths are stale. Pictures are found under the moved folder; the source is
+    relinked only after every recording matches its acquisition SHA-256."""
+    c, truth, res, tmp = case_run
+    old_cases, old_seized = os.path.dirname(c.root), str(tmp / "seized")
+    new_cases, new_seized = tmp_path / "E" / "cases", tmp_path / "F" / "seized"
+    new_cases.parent.mkdir()
+    new_seized.parent.mkdir()
+    os.rename(old_cases, new_cases)
+    os.rename(old_seized, new_seized)
+    try:
+        m = CaseStore(str(new_cases)).get(c.case_id)
+        tl = J.timeline(m)
+        assert len(tl) == 3 and all(e["snapshot"] for e in tl)              # pictures follow the moved folder
+        for e in tl:
+            assert os.path.isfile(os.path.join(m.source_dir(e["source_id"]), e["snapshot"]))
+        assert not os.path.exists(m.source("shopa-dvr").recording(tl[0]["rel_path"]))     # old drive letter
+        with pytest.raises(ValueError, match="missing"):                     # not the folder of this DVR
+            m.relink_source("shopa-dvr", str(new_seized / "TrafficCam_North"), user="SI Sharma")
+        bad = new_seized / "Jeweler_NVR" / "ch07_backup.ts"
+        orig = bad.read_bytes()
+        bad.write_bytes(orig[:-1] + bytes([orig[-1] ^ 1]))                  # one byte changed, same size
+        with pytest.raises(ValueError, match="SHA-256 differs"):
+            m.relink_source("jeweler-nvr", str(new_seized / "Jeweler_NVR"))
+        bad.write_bytes(orig)
+        assert m.source("jeweler-nvr").path == os.path.join(old_seized, "Jeweler_NVR")   # unchanged on failure
+        for s in m.sources:
+            r = m.relink_source(s.source_id, str(new_seized / os.path.basename(s.path)), user="SI Sharma")
+            assert r["verified"] == "sha256" and r["files"] == 1
+        m = CaseStore(str(new_cases)).get(c.case_id)
+        pts = J.sightings(m, "list", query={"items": [{"source_id": e["source_id"], "event_id": e["event_id"]}
+                                                      for e in tl]})
+        assert all(p["video_path"].startswith(str(new_seized)) and os.path.exists(p["video_path"]) for p in pts)
+        reel = J.highlight_reel(pts, str(tmp_path / "moved.mp4"), pre=0.2, post=0.2, width=320, fps=4)
+        assert reel["parts"] == 3
+        acts = [e["details"] for e in AuditLog(os.path.join(m.root, "audit_log.jsonl")).entries(1000)
+                if e["action"] == "source_relinked"]
+        assert len(acts) == 3 and acts[0]["old_path"].startswith(old_seized) and acts[0]["verified"] == "sha256"
+    finally:
+        os.rename(new_cases, old_cases)
+        os.rename(new_seized, old_seized)
+        for s in c.sources:                                                   # back to the original paths
+            back = CaseStore(old_cases).get(c.case_id)
+            if back.source(s.source_id).path != s.path:
+                back.relink_source(s.source_id, s.path, full_hash=False)
+
+
 def test_raw_h264_stream_without_timestamps_is_timed_by_its_frames(tmp_path):
     """Raw .264 dumps have no container duration; before the fix probe() returned 0 s and every
     seek returned the first frame (the clock read the same time everywhere)."""
@@ -186,3 +246,23 @@ def test_raw_h264_stream_without_timestamps_is_timed_by_its_frames(tmp_path):
     assert a is not None and b is not None and not (a == b).all()  # seeking reaches a different frame
     frames = list(V.iter_frames(str(p), 5, 320, 4.0, 1.0, src_size=(320, 240)))
     assert len(frames) == 5 and (frames[0][1].astype(int) - b.astype(int)).__abs__().mean() < 8
+
+
+def test_a_copy_cut_of_a_raw_stream_contains_the_event_start(tmp_path):
+    """A stream copy can only start at a keyframe, and for a raw stream ffmpeg starts at the first
+    keyframe AFTER the seek point: the evidence cut used to begin after the event had started."""
+    import numpy as np
+
+    from cctv_analysis.evidence import _cut_original
+    p = tmp_path / "ch05.264"
+    subprocess.run([V.FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-t", "12",
+                    "-c:v", "libx264", "-g", "25", "-keyint_min", "25", "-sc_threshold", "0", "-bsf:v",
+                    "h264_mp4toannexb", "-f", "h264", str(p)], check=True)
+    start = V.read_frame_at(str(p), 7.52, 0, (320, 240))               # the event starts between two keyframes
+    later = V.read_frame_at(str(p), 8.0, 0, (320, 240))
+    assert start is not None and np.abs(start.astype(int) - later.astype(int)).mean() > 1   # distinct frames
+    out = tmp_path / "cut.264"
+    assert _cut_original(str(p), 7.52, 9.0, str(out))
+    frames = V.read_frames(str(out), 0.0, 400, (320, 240))
+    assert len(frames) >= int(1.48 * 25)                                # at least the event's length
+    assert any((f == start).all() for f in frames)                       # the first frame of the event is in it

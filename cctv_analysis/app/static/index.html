@@ -4,15 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="cctv-token" content="{{TOKEN}}">
-<title>CCTV Analysis</title>
+<title>Drishti-AI · CCTV investigation</title>
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
 <header>
-  <div class="brand">CCTV Analysis <span class="ver">v{{VERSION}}</span></div>
+  <div class="brand">Drishti-AI <span class="sub">CCTV investigation</span> <span class="ver">v{{VERSION}}</span></div>
   <nav id="tabs">
-    <button data-tab="setup" class="on">1 · Set up</button>
-    <button data-tab="progress">2 · Progress</button>
+    <button data-tab="quick" class="on">Quick investigation</button>
+    <button data-tab="cases">Cases</button>
+    <button data-tab="investigate">Timeline &amp; search</button>
+    <button data-tab="journey">Journey</button>
+    <button data-tab="studio">Forensic Studio</button>
+    <button data-tab="bundle">Court bundle</button>
+    <span class="navsep"></span>
+    <button data-tab="setup">Folder analysis</button>
+    <button data-tab="progress">Progress</button>
     <button data-tab="results">Results</button>
     <button data-tab="highlights">Highlights</button>
     <button data-tab="plates">Number plates</button>
@@ -20,12 +27,175 @@
     <button data-tab="export">Export evidence</button>
     <button data-tab="settings">Settings</button>
   </nav>
+  <div class="casepick"><label class="inline" for="case-pick">Case</label><select id="case-pick"><option value="">–</option></select></div>
   <div id="licbadge" class="badge"></div>
 </header>
 <div id="toast" class="toast hidden"></div>
 <main>
+  <!-- ============================== QUICK INVESTIGATION -->
+  <section id="tab-quick" class="tab on">
+    <div class="card">
+      <h2>1 · Seized recordings</h2>
+      <div id="q-drop" class="dropzone">
+        <b>Drop the DVR / NVR / pen-drive folders here</b>
+        <div class="row center"><button id="q-add" type="button">Add folder…</button></div>
+        <div class="hint">One folder per seized device. Nothing is ever written into these folders.</div>
+      </div>
+      <table id="q-folders" class="hidden"><thead><tr><th>Name</th><th>Folder</th><th>Clock correction</th><th></th></tr></thead><tbody></tbody></table>
+      <p class="hint">Clock correction: if the DVR showed 21:25 when the true time was 21:14, enter <span class="mono">-00:11:00</span> (DVR 11 minutes fast). Leave 0 if unknown – it can be changed later without analysing again.</p>
+    </div>
+    <div class="card">
+      <h2>2 · Case details <span class="hint">(optional – can be filled in later)</span></h2>
+      <div class="formgrid">
+        <label>FIR number <input id="q-fir" placeholder="112/2026"></label>
+        <label>Police station <input id="q-ps"></label>
+        <label>Investigating officer <input id="q-io"></label>
+        <label>Case ID <input id="q-cid" placeholder="blank = automatic, e.g. FIR-112-2026"></label>
+      </div>
+    </div>
+    <div class="card">
+      <h2>3 · Analysis</h2>
+      <div class="row">
+        <label class="inline"><input type="radio" name="q-preset" value="balanced" checked> Balanced (recommended)</label>
+        <label class="inline"><input type="radio" name="q-preset" value="fast"> Fast (lighter models)</label>
+      </div>
+      <div class="row">
+        <label class="inline"><input type="checkbox" id="q-semantic" checked> Describe-it search (“man in a red helmet”)</label>
+        <label class="inline"><input type="checkbox" id="q-faces" checked> Faces</label>
+        <label class="inline"><input type="checkbox" id="q-plates" checked> Number plates</label>
+      </div>
+      <div class="row"><button id="q-run" class="primary big">▶ Run investigation</button><span id="q-msg" class="hint"></span></div>
+    </div>
+  </section>
+
+  <!-- ============================== CASES -->
+  <section id="tab-cases" class="tab">
+    <div class="card">
+      <div class="row spread"><h2>Cases</h2><span class="small">Cases folder: <span id="cs-root" class="mono"></span> <button id="cs-root-change" type="button">Change…</button></span></div>
+      <div id="cs-list"></div>
+      <details id="cs-new"><summary>New case</summary>
+        <div class="formgrid">
+          <label>Case ID <input id="cn-id" placeholder="FIR-112-2026"></label>
+          <label>FIR number <input id="cn-fir"></label>
+          <label>Police station <input id="cn-ps"></label>
+          <label>Investigating officer <input id="cn-io"></label>
+        </div>
+        <button id="cs-create" class="primary" type="button">Create case</button>
+      </details>
+    </div>
+    <div id="cs-detail" class="card hidden">
+      <h2 id="cs-title"></h2>
+      <div id="cs-fields" class="formgrid"></div>
+      <div class="row"><button id="cs-save" type="button">Save case details</button></div>
+      <h3>Sources (seized folders)</h3>
+      <div id="cs-sources"></div>
+      <div class="row"><button id="cs-add-src" type="button">Add folder…</button><span class="hint">or drop folders on this card</span></div>
+      <h3>Analyse</h3>
+      <div class="row">
+        <select id="cs-preset"><option value="balanced">Balanced (recommended)</option><option value="fast">Fast</option><option value="accurate">Accurate (slow)</option></select>
+        <label class="inline"><input type="checkbox" id="cs-semantic" checked> Describe-it search</label>
+        <label class="inline"><input type="checkbox" id="cs-faces" checked> Faces</label>
+        <label class="inline"><input type="checkbox" id="cs-plates" checked> Number plates</label>
+        <button id="cs-run" class="primary" type="button">▶ Analyse all sources</button>
+      </div>
+      <h3>Audit log</h3>
+      <button id="cs-audit" type="button">Show audit log</button><div id="cs-audit-out"></div>
+    </div>
+  </section>
+
+  <!-- ============================== TIMELINE & SEARCH -->
+  <section id="tab-investigate" class="tab">
+    <div class="card">
+      <div class="filters">
+        <label>From <input id="tl-from" type="date"></label>
+        <label>To <input id="tl-to" type="date"></label>
+        <span class="levels">
+          <label><input type="checkbox" class="tl-lv" value="HIGH" checked> HIGH</label>
+          <label><input type="checkbox" class="tl-lv" value="REVIEW" checked> REVIEW</label>
+          <label><input type="checkbox" class="tl-lv" value="LOW" checked> LOW</label>
+          <label><input type="checkbox" class="tl-lv" value="NORMAL" checked> NORMAL</label>
+        </span>
+        <label><input id="tl-people" type="checkbox"> people only</label>
+        <button id="tl-go" class="primary" type="button">Show timeline</button>
+      </div>
+      <p class="hint">All cameras of the case on one clock: the calibrated time (DVR time + the clock correction of each source). The DVR's own time is shown under it.</p>
+      <div id="tl-lanes" class="lanes"></div>
+      <div id="tl-count" class="hint"></div>
+      <div id="tl-list" class="evlist"></div>
+    </div>
+    <div class="card">
+      <h2>Search the whole case</h2>
+      <div class="searchgrid">
+        <div><h3>Describe it</h3><div class="row"><input id="ts-q" placeholder="man in a red helmet on a motorbike"><button id="ts-go" class="primary" type="button">Search</button></div></div>
+        <div><h3>Clothing colours</h3><div class="row"><label class="inline">Top <select id="pp-upper"></select></label><label class="inline">Bottom <select id="pp-lower"></select></label><button id="pp-go" type="button">Find people</button></div></div>
+        <div><h3>Number plate</h3><div class="row"><input id="ps-q" placeholder="MH12AB1234"><label class="inline"><input type="checkbox" id="ps-fuzzy" checked> allow 1 wrong character</label><button id="ps-go" type="button">Find vehicle</button></div></div>
+      </div>
+      <div id="srch-out"></div>
+    </div>
+    <div id="ce-detail" class="card hidden"></div>
+  </section>
+
+  <!-- ============================== JOURNEY -->
+  <section id="tab-journey" class="tab">
+    <div class="card">
+      <h2 id="jr-title">Journey</h2>
+      <p id="jr-hint" class="hint">Find a person, face or vehicle under “Timeline &amp; search” – every sighting appears here in calibrated time order. Untick wrong matches, then rebuild the journey.</p>
+      <div id="jr-points"></div>
+      <div class="row">
+        <button id="jr-rebuild" type="button">Rebuild journey from ticked sightings</button>
+        <button id="jr-reel" class="primary" type="button">Make highlight reel</button>
+        <button id="jr-bundle" type="button">Add ticked to court bundle</button>
+      </div>
+      <p id="jr-summary" class="small"></p>
+      <div id="jr-flow" class="flow"></div>
+      <div id="jr-map" class="jmap"></div>
+      <div id="jr-reel-out"></div>
+    </div>
+  </section>
+
+  <!-- ============================== FORENSIC STUDIO -->
+  <section id="tab-studio" class="tab">
+    <div class="card">
+      <h2>Forensic Studio</h2>
+      <p id="fx-src" class="small">Open an event (Timeline &amp; search) and choose “Open in Forensic Studio”.</p>
+      <div class="row">
+        <label class="inline">Time in the video (s) <input id="fx-t" type="number" step="0.04" min="0"></label>
+        <button id="fx-load" type="button">Load frame</button>
+        <label class="inline">Frames to stack <select id="fx-n"><option>1</option><option>3</option><option>5</option><option>7</option><option>9</option></select></label>
+        <label class="inline">Method <select id="fx-method"><option>median</option><option>mean</option></select></label>
+        <label class="inline">Motion <select id="fx-motion"><option>translation</option><option selected>euclidean</option><option>affine</option><option>homography</option></select></label>
+      </div>
+      <div class="studio">
+        <div><h3>Original (decoded from the recording)</h3><div id="fx-wrap" class="imgwrap"><img id="fx-orig" alt=""></div>
+          <p class="hint">Perspective: add the filter, then click the four corners (number plate, sign board) on the original.</p></div>
+        <div><h3>Enhanced</h3><img id="fx-out" alt=""><p id="fx-log" class="mono small"></p></div>
+      </div>
+      <div class="row"><select id="fx-op"></select><button id="fx-add" type="button">Add filter</button><button id="fx-clear" type="button">Remove all filters</button></div>
+      <div id="fx-chain"></div>
+      <div class="row"><input id="fx-name" placeholder="name of the still, e.g. plate_closeup"><button id="fx-save" class="primary" type="button">Save enhanced still</button></div>
+      <h3>Saved stills of this case</h3>
+      <div id="fx-saved" class="grid"></div>
+    </div>
+  </section>
+
+  <!-- ============================== COURT BUNDLE -->
+  <section id="tab-bundle" class="tab">
+    <div class="card">
+      <h2>Court bundle · certificate under Section 63, BSA 2023</h2>
+      <p class="hint">One certificate per seized device: Part A is signed by the person in charge of that DVR/NVR, Part B by the expert. The bundle holds the original segments (stream copy, not re-encoded), the enhanced stills with their filter logs, the audit logs and the SHA-256 of every file. The tool never signs and never fills in a person's particulars you did not type.</p>
+      <h3>Records</h3><div id="bd-items"></div>
+      <h3>Enhanced stills</h3><div id="bd-enh"></div>
+      <h3>Part A – person in charge of each device</h3><div id="bd-parta"></div>
+      <h3>Part B – expert</h3><div id="bd-partb" class="formgrid"></div>
+      <label>Notes <textarea id="bd-notes" rows="2"></textarea></label>
+      <div class="row"><button id="bd-go" class="primary" type="button">Create court bundle</button></div>
+      <div id="bd-out"></div>
+    </div>
+    <div class="card"><h2>Exports of this case</h2><div id="bd-exports"></div></div>
+  </section>
+
   <!-- ============================== SETUP -->
-  <section id="tab-setup" class="tab on">
+  <section id="tab-setup" class="tab">
     <div class="card">
       <h2>Recordings</h2>
       <label>Folder with CCTV recordings</label>
@@ -178,5 +348,6 @@
   </div>
 </div>
 <script src="/static/app.js"></script>
+<script src="/static/case.js"></script>
 </body>
 </html>

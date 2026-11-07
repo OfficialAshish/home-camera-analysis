@@ -21,34 +21,42 @@ from .config import PRESETS, Config
 log = logging.getLogger("cctv")
 
 
-def source_config(case: Case, sid: str, options: Optional[dict] = None, preset: str = "balanced",
-                  work_root: str = "", model_cache_dir: str = "") -> Config:
-    """The analysis configuration of one source of a case."""
+def run_options(options: Optional[dict] = None, preset: str = "balanced") -> dict:
+    """The analysis options of a case run merged over the preset, validated (ValueError or
+    TypeError name the problem) – before anything is created or started."""
     if preset not in PRESETS:
         raise ValueError(f"preset must be one of {list(PRESETS)}")
-    src = case.source(sid)
-    out = case.source_dir(sid)
     merged = {**PRESETS[preset], **(options or {})}
     for k in ("input_dir", "output_dir", "work_dir"):
         merged.pop(k, None)
+    problems = Config.from_dict(merged).validate()
+    if problems:
+        raise ValueError("invalid settings: " + "; ".join(problems))
+    return merged
+
+
+def source_config(case: Case, sid: str, options: Optional[dict] = None, preset: str = "balanced",
+                  work_root: str = "", model_cache_dir: str = "") -> Config:
+    """The analysis configuration of one source of a case."""
+    merged = run_options(options, preset)
+    src = case.source(sid)
+    out = case.source_dir(sid)
     merged.update(input_dir=src.path, output_dir=out,
                   work_dir=os.path.join(work_root or os.path.join(case.root, ".work"),
                                         hashlib.sha1(os.path.realpath(out).encode()).hexdigest()[:12]),
                   drive_links=False)
-    if model_cache_dir:
+    if model_cache_dir and not (options or {}).get("model_cache_dir"):
         merged["model_cache_dir"] = model_cache_dir
-    cfg = Config.from_dict(merged)
-    problems = cfg.validate()
-    if problems:
-        raise ValueError("invalid settings: " + "; ".join(problems))
-    return cfg
+    return Config.from_dict(merged)
 
 
 def run_case(case: Case, options: Optional[dict] = None, preset: str = "balanced",
              progress: Optional[Callable[[dict], None]] = None, cancel: Optional[threading.Event] = None,
              work_root: str = "", model_cache_dir: str = "", sources: Optional[List[str]] = None,
              remux_files: bool = True, analyse: bool = True, appearance_index: bool = True,
-             limits: Optional[Callable[[Config], None]] = None) -> dict:
+             max_videos_total: int = 0) -> dict:
+    """`max_videos_total` > 0 caps the videos analysed by the whole run (all sources together):
+    the trial licence's per-job limit. Ingest (hashing) is never limited."""
     cancel = cancel or threading.Event()
     todo = [s for s in case.sources if sources is None or s.source_id in sources]
     if not todo:
@@ -62,8 +70,10 @@ def run_case(case: Case, options: Optional[dict] = None, preset: str = "balanced
             progress({**d, "source": src.source_id, "source_label": src.label, "source_index": i, "sources": n,
                       "percent": round(100 * (i - 1 + inner / 100) / n, 1)})
 
+    from . import video_io as V
     from .ingest import ingest_source
     from .pipeline import Analyzer
+    budget = max_videos_total
     case.audit.append("case_run_started", case_id=case.case_id, sources=[s.source_id for s in todo], preset=preset)
     for i, src in enumerate(todo, 1):
         if cancel.is_set():
@@ -84,11 +94,7 @@ def run_case(case: Case, options: Optional[dict] = None, preset: str = "balanced
         def analysis_progress(d: dict, i: int = i, src=src) -> None:
             emit(i, src, {**d, "percent": 20 + 0.75 * _pct(d)})
         rec = ingest_source(src.path, out, remux_files=remux_files, progress=ingest_progress, cancel=cancel)
-        from . import video_io as V
-        for f in rec["files"]:                          # raw streams cannot seek: decode their lossless remux
-            orig = os.path.join(src.path, f["rel"])
-            if f.get("playback") and V.is_raw(orig):
-                V.register_proxy(orig, os.path.join(out, f["playback"]))
+        register_proxies(src.path, out, rec)
         res["files"] = len(rec["files"])
         res["merkle_root"] = rec["merkle_root"]
         res["remuxed"] = sum(1 for f in rec["files"] if f.get("playback"))
@@ -97,10 +103,14 @@ def run_case(case: Case, options: Optional[dict] = None, preset: str = "balanced
                           changed=rec["changed_since_last_ingest"])
         if analyse and not cancel.is_set():
             cfg = source_config(case, src.source_id, options, preset, work_root, model_cache_dir)
-            if limits:
-                limits(cfg)
-            an = Analyzer(cfg, analysis_progress, cancel)
-            res["stats"] = an.run()
+            if max_videos_total and budget <= 0:
+                res["skipped"] = f"trial limit: at most {max_videos_total} videos per run"
+            else:
+                if max_videos_total:
+                    cfg.max_videos = min(cfg.max_videos or budget, budget)
+                    budget -= len(V.find_videos(cfg))
+                an = Analyzer(cfg, analysis_progress, cancel)
+                res["stats"] = an.run()
         if appearance_index and not cancel.is_set() and os.path.exists(os.path.join(out, "analysis.db")):
             from .reid import build_index
             emit(i, src, {"stage": "appearance index", "percent": 96})
@@ -110,6 +120,21 @@ def run_case(case: Case, options: Optional[dict] = None, preset: str = "balanced
     case.audit.append("case_run_finished", case_id=case.case_id, cancelled=stopped,
                       results={k: {kk: vv for kk, vv in v.items() if kk != "stats"} for k, v in results.items()})
     return {"case_id": case.case_id, "sources": results, "cancelled": stopped}
+
+
+def register_proxies(src_dir: str, out_dir: str, rec: Optional[dict] = None) -> int:
+    """Raw .264/.265 streams cannot seek: decode their lossless remux instead (video_io proxy).
+    Called after ingest and whenever a case is opened (the registry lives in memory)."""
+    from . import video_io as V
+    from .ingest import load_ingest
+    rec = rec if rec is not None else load_ingest(out_dir)
+    n = 0
+    for f in (rec or {}).get("files", []):
+        orig = os.path.join(src_dir, f["rel"])
+        if f.get("playback") and V.is_raw(orig):
+            V.register_proxy(orig, os.path.join(out_dir, f["playback"]))
+            n += 1
+    return n
 
 
 def _pct(d: dict) -> float:

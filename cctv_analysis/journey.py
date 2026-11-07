@@ -4,9 +4,10 @@ Every query here spans all sources of a case and works on **calibrated time** (D
 the source's clock offset, see cctv_analysis.cases); the DVR time is always returned as well.
 
 * ``timeline``  – events of all sources in calibrated order (the cross-camera timeline);
-* ``sightings`` – every occurrence of one identity: a face identity (``P0003`` or an enrolled
-  name), a number plate (exact, or within one OCR edit), an appearance (person re-ID matches of
-  a chosen track above a score), or a list the officer curated;
+* ``sightings`` – every occurrence of one identity: a face (an identity ``P0003`` of one source,
+  found in the other sources by face similarity – identity numbers are per source – or an
+  enrolled name), a number plate (exact, or within one OCR edit), an appearance (person re-ID
+  matches of a chosen track above a score), or a list the officer curated;
 * ``journey``   – sightings collapsed into an ordered path of camera stops (arrival, departure,
   travel time to the next stop, map position when the source has one);
 * ``highlight_reel`` – one video with only those sightings, each part burnt in with
@@ -17,12 +18,15 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 import sqlite3
 import subprocess
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from . import video_io as V
 from .cases import Case, calibrate
+from .plates import normalize, within_edits
+from .storage import rel_to
 
 log = logging.getLogger("cctv")
 FMT = "%Y-%m-%d %H:%M:%S"
@@ -37,20 +41,9 @@ def _db(out_dir: str) -> Optional[sqlite3.Connection]:
     return db
 
 
-def _rel(out_dir: str, p: Optional[str]) -> str:
-    if not p:
-        return ""
-    full = p if os.path.isabs(p) else os.path.join(out_dir, p)
-    try:
-        r = os.path.relpath(full, out_dir)
-    except ValueError:
-        return ""
-    return "" if r.startswith("..") else r.replace(os.sep, "/")
-
-
 def sources(case: Case) -> List[dict]:
     return [{"source_id": s.source_id, "label": s.label, "out_dir": case.source_dir(s.source_id),
-             "offset_for": s.offset_for, "location": s.location} for s in case.sources]
+             "offset_for": s.offset_for, "recording": s.recording, "location": s.location} for s in case.sources]
 
 
 def _best_snapshot(snaps_json) -> str:
@@ -67,6 +60,12 @@ def _best_snapshot(snaps_json) -> str:
 
 def timeline(case: Case, day_from: str = "", day_to: str = "", levels: Sequence[str] = (), people_only: bool = False,
              limit: int = 500) -> List[dict]:
+    return timeline_page(case, day_from, day_to, levels, people_only, limit)[0]
+
+
+def timeline_page(case: Case, day_from: str = "", day_to: str = "", levels: Sequence[str] = (),
+                  people_only: bool = False, limit: int = 500):
+    """(the first `limit` events in calibrated order, how many events match in total)."""
     out = []
     for s in sources(case):
         db = _db(s["out_dir"])
@@ -95,29 +94,59 @@ def timeline(case: Case, day_from: str = "", day_to: str = "", levels: Sequence[
                         "calibrated_end": calibrate(r["end_dt"], off), "offset_seconds": off,
                         "duration": r["duration"], "kind": r["kind"], "level": r["level"], "score": r["score"],
                         "persons": r["n_person_tracks"], "time_source": r["time_source"],
-                        "snapshot": _rel(s["out_dir"], _best_snapshot(r["snapshots"])),
+                        "snapshot": rel_to(s["out_dir"], _best_snapshot(r["snapshots"])),
                         "rel_path": r["rel_path"], "start_off": r["start_off"]})
     out.sort(key=lambda e: (e["calibrated_time"] or "9999", e["source_id"], e["event_id"]))
-    return out[:limit]
+    return out[:limit], len(out)
 
 
-def _edit_distance_le1(a: str, b: str) -> bool:
-    if a == b:
-        return True
-    if abs(len(a) - len(b)) > 1:
-        return False
-    if len(a) == len(b):
-        return sum(x != y for x, y in zip(a, b)) <= 1
-    if len(a) > len(b):
-        a, b = b, a
-    i = j = d = 0
-    while i < len(a) and j < len(b):
-        if a[i] == b[j]:
-            i += 1
-        else:
-            d += 1
-        j += 1
-    return d + (len(b) - j) + (len(a) - i) <= 1
+def face_identities(srcs: List[dict], value: str, query: Optional[dict] = None,
+                    threshold: Optional[float] = None) -> Dict[str, Dict[str, float]]:
+    """{source_id: {identity: similarity}} of the person `value` in every source.
+
+    Face identities (P0001 …) are numbered per analysed folder: P0003 of one DVR and P0003 of
+    another are unrelated people. So the person is taken from the source the officer picked it
+    in (``query["source_id"]``) and found in the other sources by face similarity (SFace cosine
+    ≥ ``face_match_threshold``) against their identities. Enrolled names (known-faces folder)
+    are the same everywhere and need no source."""
+    import json
+
+    import numpy as np
+
+    from .config import Config
+    thr = Config().face_match_threshold if threshold is None else threshold
+
+    def load(out_dir):
+        p = os.path.join(out_dir, "identities")
+        try:
+            with open(p + ".json", encoding="utf-8") as fh:
+                ids = json.load(fh)
+            emb = np.load(p + ".npy").astype(np.float32)
+        except (OSError, ValueError):
+            return [], None
+        return (ids, emb) if len(ids) == len(emb) and len(ids) else ([], None)
+
+    sid = (query or {}).get("source_id", "")
+    home = next((s for s in srcs if s["source_id"] == sid), None)
+    if home is None:
+        raise ValueError(f"{value} is a face identity of one source: say which source it is from (source_id)")
+    ids, emb = load(home["out_dir"])
+    i = next((k for k, r in enumerate(ids) if r.get("id") == value), None)
+    if i is None or emb is None:
+        raise KeyError(f"no face identity {value} in source {sid}")
+    q = emb[i] / (np.linalg.norm(emb[i]) + 1e-9)
+    out: Dict[str, Dict[str, float]] = {sid: {value: 1.0}}
+    for s in srcs:
+        if s is home:
+            continue
+        ids2, emb2 = load(s["out_dir"])
+        if emb2 is None:
+            continue
+        sims = (emb2 / (np.linalg.norm(emb2, axis=1, keepdims=True) + 1e-9)) @ q
+        hit = {ids2[j]["id"]: round(float(sims[j]), 3) for j in np.nonzero(sims >= thr)[0]}
+        if hit:
+            out[s["source_id"]] = hit
+    return out
 
 
 def sightings(case: Case, kind: str, value: str = "", query: Optional[dict] = None, min_score: float = 0.7,
@@ -136,7 +165,7 @@ def sightings(case: Case, kind: str, value: str = "", query: Optional[dict] = No
         qv = reid.query_vector(src["out_dir"], q.get("event_id", ""), int(q.get("track", -1)))
         if qv is None:
             raise KeyError("that person has no appearance vector yet – run the case (or index the source) first")
-        matches = reid.search(srcs, qv["hand"], qv["deep"], qv["model"], min_score, limit)
+        matches = reid.search(srcs, qv["hand"], qv["deep"], qv["model"], min_score, limit, colors=q.get("colors"))
         if not any((m["source_id"], m["event_id"], int(m["track"])) ==
                    (src["source_id"], q["event_id"], int(q["track"])) for m in matches):
             matches.append({**qv["meta"], "source_id": src["source_id"], "score": 1.0,
@@ -161,26 +190,34 @@ def sightings(case: Case, kind: str, value: str = "", query: Optional[dict] = No
         v = (value or "").strip()
         if not v:
             raise ValueError("a face identity or plate text is required")
+        by_name = kind == "face" and not re.fullmatch(r"P\d{4,}", v)        # an enrolled name, not P0001
+        matched = face_identities(srcs, v, query) if kind == "face" and not by_name else {}
         for s in srcs:
             db = _db(s["out_dir"])
             if db is None:
                 continue
             try:
                 if kind == "face":
-                    rows = db.execute("SELECT t.event_id, t.track, t.first_dt, t.first_off, t.duration, t.person_crop, "
-                                      "t.face_crop, e.camera, e.rel_path, e.start_off FROM tracks t JOIN events e "
-                                      "USING(event_id) WHERE t.identity=? OR t.known_name=?", (v, v)).fetchall()
+                    sql = ("SELECT t.event_id, t.track, t.first_dt, t.first_off, t.duration, t.person_crop, t.face_crop, "
+                           "t.identity, e.camera, e.rel_path, e.start_off FROM tracks t JOIN events e USING(event_id) ")
+                    if by_name:
+                        rows = db.execute(sql + "WHERE t.known_name=?", (v,)).fetchall()
+                        sims: Dict[str, float] = {}
+                    else:
+                        sims = matched.get(s["source_id"], {})
+                        rows = db.execute(sql + f"WHERE t.identity IN ({','.join('?' * len(sims))})",
+                                          list(sims)).fetchall() if sims else []
                     for r in rows:
                         pts.append(_point(s, r["event_id"], r["track"], r["camera"], r["first_dt"], r["first_off"],
-                                          r["duration"], r["person_crop"], r["face_crop"], "", None, r["rel_path"],
-                                          r["start_off"]))
+                                          r["duration"], r["person_crop"], r["face_crop"], "",
+                                          sims.get(r["identity"]), r["rel_path"], r["start_off"]))
                 else:
-                    norm = "".join(ch for ch in v.upper() if ch.isalnum())
+                    norm = normalize(v)
                     rows = db.execute("SELECT p.event_id, p.track, p.dt, p.t_off, p.text, p.crop_path, p.confidence, "
                                       "e.camera, e.rel_path, e.start_off FROM plates p JOIN events e USING(event_id) "
                                       "WHERE p.text != ''").fetchall()
                     for r in rows:
-                        if r["text"] == norm or (fuzzy and _edit_distance_le1(r["text"], norm)):
+                        if r["text"] == norm or (fuzzy and within_edits(r["text"], norm, 1)):
                             pts.append(_point(s, r["event_id"], r["track"], r["camera"], r["dt"], r["t_off"], 2.0,
                                               r["crop_path"], "", r["text"], r["confidence"], r["rel_path"],
                                               r["start_off"]))
@@ -211,20 +248,12 @@ def _from_event(s: dict, event_id: str, track) -> List[dict]:
 
 
 def _point(s, event_id, track, camera, dvr_time, t_off, duration, crop, face, plate, score, rel_path, ev_off):
-    db = _db(s["out_dir"])
-    video = ""
-    if db is not None:
-        try:
-            r = db.execute("SELECT video_path FROM events WHERE event_id=?", (event_id,)).fetchone()
-            video = r["video_path"] if r else ""
-        finally:
-            db.close()
     off = s["offset_for"](camera)
     return {"source_id": s["source_id"], "source_label": s["label"], "camera": camera, "event_id": event_id,
             "track": track, "dvr_time": dvr_time, "calibrated_time": calibrate(dvr_time, off), "offset_seconds": off,
-            "t_off": float(t_off or 0), "duration": float(duration or 0), "thumb": _rel(s["out_dir"], crop),
-            "face": _rel(s["out_dir"], face), "plate": plate, "score": score, "rel_path": rel_path,
-            "video_path": video, "location": s["location"]}
+            "t_off": float(t_off or 0), "duration": float(duration or 0), "thumb": rel_to(s["out_dir"], crop),
+            "face": rel_to(s["out_dir"], face), "plate": plate, "score": score, "rel_path": rel_path,
+            "video_path": s["recording"](rel_path) if rel_path else "", "location": s["location"]}
 
 
 def journey(points: List[dict], gap: float = 120.0) -> dict:
@@ -318,4 +347,4 @@ def highlight_reel(points: List[dict], dest: str, pre: float = 2.0, post: float 
     return {"path": dest, "parts": len(pts), "seconds": round(frames / fps, 1), "index": index}
 
 
-__all__ = ["highlight_reel", "journey", "sightings", "timeline"]
+__all__ = ["face_identities", "highlight_reel", "journey", "sightings", "timeline", "timeline_page"]

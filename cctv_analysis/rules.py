@@ -7,6 +7,9 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+# event levels, most to least suspicious (the pipeline assigns them from the score)
+LEVELS = ("HIGH", "REVIEW", "LOW", "NORMAL")
+
 WEIGHTS = {
     "watchlist_face": 50,
     "watchlist_plate": 50,

@@ -81,12 +81,39 @@ def self_test(data_dir: str) -> int:
         native["ocr_read"] = any("05:38" in t for t, _ in RapidOCREngine().read(img))
     except Exception as e:
         native["ocr_read"] = f"FAILED: {e}"
+    try:                                    # investigation features: case API, PDF certificate, filters, re-ID
+        import cv2
+        import numpy as np
+
+        from .. import enhance, reid
+        from ..cases import CaseStore
+        from ..section63 import certificate_data, certificate_pdf
+        native["case_api"] = c.get("/api/cases", headers=h).status_code == 200 and \
+            c.get("/static/case.js", headers={"Host": "127.0.0.1:8765"}).status_code == 200
+        tmp = tempfile.mkdtemp()
+        case = CaseStore(os.path.join(tmp, "cases")).create("SELF-TEST")
+        certificate_pdf(certificate_data(case, []), os.path.join(tmp, "c.pdf"))
+        with open(os.path.join(tmp, "c.pdf"), "rb") as fh:
+            native["certificate_pdf"] = fh.read(5) == b"%PDF-"
+        img = np.full((64, 64, 3), 90, np.uint8)
+        cv2.rectangle(img, (16, 16), (48, 48), (200, 200, 200), -1)
+        out, rec = enhance.apply_chain(img, [{"op": "CLAHE"}, {"op": "WienerDeblur", "length": 5}])
+        native["forensic_filters"] = out.shape == img.shape and rec["log"].startswith("CLAHE(")
+        crop = np.zeros((128, 64, 3), np.uint8)
+        crop[20:70] = (40, 40, 200)
+        crop[70:] = (150, 70, 30)
+        a = reid.appearance(crop)
+        native["appearance_vector"] = a is not None and abs(float(np.linalg.norm(a["vector"])) - 1) < 1e-4
+    except Exception as e:
+        native["case_api"] = native.get("case_api", False)
+        native["investigation"] = f"FAILED: {e}"
     report = {"modules_failed": failed, "health": ok_health, "index": ok_page, "static": ok_static,
               "ffmpeg": bool(V.FFMPEG), "ffprobe": bool(V.FFPROBE), "encoder": V.h264_args()[1] if V.FFMPEG else "",
               "ocr": available_engines(), **native}
     print(report)
     ok = not failed and ok_health and ok_page and ok_static and V.FFMPEG and V.FFPROBE and \
-        native["torchvision_nms"] is True and native["ocr_read"] is True
+        native["torchvision_nms"] is True and native["ocr_read"] is True and "investigation" not in native and \
+        all(native.get(k) is True for k in ("case_api", "certificate_pdf", "forensic_filters", "appearance_vector"))
     return 0 if ok else 1
 
 
@@ -128,7 +155,7 @@ def main(argv=None):
     app = create_app(data_dir, token, port, allow_lan=a.allow_lan)
     url = f"http://127.0.0.1:{port}/?t={token}"
     print("=" * 70)
-    print(" CCTV Analysis is running. Open this private link in your browser:")
+    print(" Drishti-AI (CCTV Analysis) is running. Open this private link in your browser:")
     print(" ", url)
     print(" Data folder:", data_dir)
     print(" Keep this window open; close it to stop the app.")

@@ -38,8 +38,8 @@ all fail is marked `error`; the same error on 3 videos in a row stops the run.
 | `plates.py` | plate localisation, OCR, deblur, fusion, format fit, voting, watchlist matching |
 | `semantic.py` | SigLIP-2 tags and text search |
 | `vlm.py` | VLM providers (transformers, OpenAI-compatible) |
-| `rules.py` | explainable score, zones, counting lines |
-| `storage.py` | SQLite (working copy on fast disk, synced to the output folder) |
+| `rules.py` | explainable score, event levels (`LEVELS`), zones, counting lines |
+| `storage.py` | SQLite (working copy on fast disk, synced to the output folder); `resolve`/`rel_to` for stored paths of a moved folder |
 | `reviews.py`, `audit.py` | review decisions, hash-chained audit log |
 | `reels.py`, `report.py` | highlight reels, Excel/HTML/charts |
 | `retime.py` | fix times of analysed folders in place |
@@ -55,12 +55,17 @@ all fail is marked `error`; the same error on 3 videos in a row stops the run.
 | `section63.py` | Section 63 BSA 2023 certificate (PDF/HTML) and the case evidence bundle |
 | `merkle.py` | RFC 6962 SHA-256 Merkle tree over evidence hashes |
 | `resources.py` | memory governor: smaller batches above 85 % RAM, waits above 93 % |
-| `app/` | web server, jobs, results queries, UI |
+| `app/server.py` | web server, guards, single-folder endpoints; registers `app/case_api.py` (case endpoints) |
+| `app/common.py` | request helpers shared by the endpoint modules (`ApiError`, `abs_dir`, `inside`) |
+| `app/jobs.py`, `app/results.py`, `app/features.py` | background jobs, results queries, setup-form fields |
+| `app/static/` | UI: `index.html`, `app.js` (helpers, single-folder screens), `case.js` (case screens), `app.css` |
 
 ## Cases
 A case runs the pipeline once per seized source, each into `<case>/sources/<id>/` (an ordinary
 output folder), so per-source views, reports and exports are unchanged; `journey.py` and `reid.py`
-query across those folders on calibrated time. Layout and rules: `docs/CASES.md`.
+query across those folders on calibrated time. Layout and rules: `docs/CASES.md`. Stored absolute
+paths are resolved at read time (moved case folder: `storage.resolve`; recordings: the source's
+current folder, `Source.recording`); a moved seized folder is relinked after its hashes match.
 
 ## Storage
 `<output>/analysis.db` (SQLite) is the source of truth for analysis results, written by the

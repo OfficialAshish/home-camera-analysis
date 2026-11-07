@@ -405,6 +405,27 @@ def read_frame_at(path: str, t: float, width: int = 0, src_size=(0, 0)) -> Optio
         return f.copy()
     return None
 
+
+def read_frames(path: str, t: float, n: int, src_size=(0, 0)) -> List[np.ndarray]:
+    """`n` consecutive decoded frames at full size, the first being the frame shown at time t
+    (no fps filter: every frame of the recording, none duplicated or dropped)."""
+    sw, sh = src_size
+    if not (FFMPEG and sw and sh) or n < 1:
+        return []
+    w, h = sw // 2 * 2, sh // 2 * 2
+    src = decode_path(path)
+    pre, post = seek_args(src, t)
+    cmd = [FFMPEG, "-nostdin", "-v", "error", *pre, *_input_args(src), "-i", src, *post,
+           "-map", "0:v:0", "-an", "-sn", "-frames:v", str(int(n)), "-vf", f"scale={w}:{h}:flags=area",
+           "-pix_fmt", "bgr24", "-f", "rawvideo", "pipe:1"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=300)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    size = w * h * 3
+    return [np.frombuffer(r.stdout[i:i + size], np.uint8).reshape((h, w, 3)).copy()
+            for i in range(0, len(r.stdout) - size + 1, size)]
+
 # ------------------------------------------------------------- cameras
 
 def _device_serial(base: str) -> str:

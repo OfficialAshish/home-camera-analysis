@@ -304,3 +304,24 @@ def test_a_file_removed_from_the_bundle_is_reported(case_with_event, tmp_path):
                 zout.writestr(n, zin.read(n))
     v = S63.verify_bundle(str(cut))
     assert not v["ok"] and len(v["missing"]) == 1 and v["missing"][0].endswith("_input.png")
+
+
+def test_an_evidence_package_without_its_recording_says_so(case_with_event, tmp_path):
+    """Single-folder evidence export: when the recording is gone the package must state that the
+    original segment is missing (it used to be left out silently)."""
+    from cctv_analysis.evidence import export_evidence
+    c, saved, video = case_with_event
+    out = c.source_dir("shop-a-dvr")
+    ok = export_evidence(out, ["ch01-20261031-211405-0001001"], str(tmp_path / "with.zip"))
+    with zipfile.ZipFile(ok["zip"]) as z:
+        ev = json.loads(z.read("events/ch01-20261031-211405-0001001/event.json"))
+        assert "events/ch01-20261031-211405-0001001/original_segment.mp4" in z.namelist()
+    assert ev["notes"]["original_segment"].startswith("stream copy")
+    os.rename(video, video + ".moved")
+    gone = export_evidence(out, ["ch01-20261031-211405-0001001"], str(tmp_path / "without.zip"))
+    with zipfile.ZipFile(gone["zip"]) as z:
+        ev = json.loads(z.read("events/ch01-20261031-211405-0001001/event.json"))
+        report = z.read("incident_report.html").decode()
+        assert not any(n.endswith("original_segment.mp4") for n in z.namelist())
+    assert ev["notes"]["original_segment"].startswith("NOT INCLUDED – the recording ch01_20261031211400.mp4 was not found")
+    assert "NOT INCLUDED" in report

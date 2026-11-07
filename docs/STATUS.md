@@ -1,124 +1,120 @@
-# Round status – enterprise CCTV platform
+# Round status – Drishti-AI police investigation workstation
 
-Status: **current** · Branch `feature/enterprise-cctv-platform` (PR #1) · Base: `main` @ `bbc2e0b`
+Status: **current** · Branch `engineering/foundation` (draft PR #2) · Base: `main` @ `7e6d15f` · Previous
+round: `docs/archive/STATUS-2026-11-02-enterprise-platform.md`.
 Environment of all local measurements: Linux, Intel Xeon 2.8 GHz, 4 vCPU, 15 GB RAM, no GPU,
-Python 3.11.17, ffmpeg 6.1, torch 2.15 CPU, ultralytics 8.4.198.
+Python 3.11, ffmpeg with libx264, torch 2.15 CPU, ultralytics 8.4.204. `NODE_ENV` and other
+`CCTV_*`/`HF_*` variables were checked unset before every local run (`env | grep`), and CI
+prints them.
 
-## 1. Summary
-The scrambled highlight timeline is fixed at its root cause. Recording times now come from the
-DVR clock printed on the picture (OCR, cross-checked) rather than download timestamps, and videos
-and reels follow real recording order. Reels keep the original picture and are filed under
-`highlights/YYYY/MM-Mon/`. Optional analyses can be switched off and then really skip their work.
-Added: number-plate reading (with motion-deblur enhancement and a watchlist), VLM providers
-(built-in or any OpenAI-compatible local server), a desktop app (local web UI, packaged with
-PyInstaller) with system check, scan, benchmark, estimate, progress, results, highlights, plates,
-faces, search by photo, evidence export, audit log and settings; offline time-limited licences;
-evidence packages with SHA-256 manifests and redaction; reviews; footfall counting lines; face and
-plate watchlists; in-place `--retime` for folders analysed with the old version. CI runs lint,
-type check, notebook sync, the full test suite (incl. a real-browser test) and a Windows build.
+## 1. Implementation and audit summary
+The single-folder CCTV triage app became **Drishti-AI**, an offline investigation workstation for
+police, without changing the single-folder screens:
+* **Cases** (`cases.py`, `investigation.py`): one case, any number of seized sources (DVR, NVR, pen
+  drive), each analysed by the unchanged pipeline into its own folder; clock corrections per
+  source and per camera that never edit the DVR time; every edit audited (hash chain).
+* **Acquisition** (`ingest.py`, `merkle.py`): SHA-256 of every seized file, RFC 6962 Merkle root,
+  lossless MP4 playback copies checked by codec and packet count; raw `.264/.265` DVR streams made
+  analysable (they were not – finding 1).
+* **Search across the case** (`journey.py`, `reid.py`, `case_api.py`): cross-camera timeline on the
+  calibrated clock; person appearance search (built-in descriptor, optional ONNX model); clothing
+  colours; describe-it search (SigLIP-2); face sightings across sources by similarity; plates
+  exact or within one character; journey with travel times, offline route map, highlight reel with
+  calibrated and DVR time burnt in.
+* **Forensic Studio** (`enhance.py`): 10 filters + multi-frame ECC stacking, validated parameters,
+  reproducible chain log, input/output hashes, audit entry; checked to reproduce bit for bit.
+* **Court bundle** (`section63.py`): one Section 63 BSA 2023 certificate per device (PDF + HTML +
+  JSON) with the hash report, stored Part A/Part B declarants, `checksums.sha256`, `README.txt`,
+  verification. Wording follows the Schedule of the Bharatiya Sakshya (Second) Bill 2023 (primary
+  source fetched and hashed; Gazette text UNVERIFIED).
+* **App** (`app/case_api.py`, `static/case.js`): Quick investigation (drag & drop located by
+  content, system dialog where it can open, presets, one-click run), Cases, Timeline & search,
+  Journey, Forensic Studio, Court bundle; `run_app.bat` one-click launcher with `--self-test`.
+* **Robustness**: stored paths follow a moved case folder; recordings come from the source's
+  current folder; a moved seized folder is relinked only after its SHA-256 match; memory governor
+  (85 %/93 %); trial limit per case run.
+* **Documents**: CASES, REID, FORENSIC-STUDIO, legal/BSA-2023-SECTION-63, EVIDENCE, DESKTOP-APP,
+  USER-GUIDE (Part A for officers), ARCHITECTURE, TESTING, DECISIONS D14–D23, COMMERCIAL-READINESS,
+  and `docs/gem/` (technical specifications, Make in India declaration, terms, EULA, police
+  handover runbook – templates with explicit seller blanks, no certification claims).
+
+Gate on the final state: see section 5 (full pytest, ruff, mypy in the CI environment, notebook
+regenerated, self-test, mutation check, CI on GitHub).
 
 ## 2. Issues found and how each was fixed (with evidence)
 | # | Issue | Fix | Evidence |
 |---|---|---|---|
-| 1 | **Reel timeline scrambled** (reported): cloud clips had no time in the name; metadata/mtime = next-day download time → wrong day, reel in download order | `timeline.py`: filename → OSD (OCR) → metadata (must match folder date) → mtime; multi-sample consensus; folder-date checks | Original code on the reproduction: 0/5 reel positions show the clock they claim, order 22:00→05:38→13:47→20:38→01:12. New: 10/10 within 1.4 s, monotonic. `test_reel_shows_the_dvr_clock_it_claims`, `test_cloud_export_times_come_from_the_dvr_clock` (incl. negative control) |
-| 2 | Date folder `31Oct26New` used as camera name | date-like folders skipped; device-serial prefix used | `test_reel_is_chronological_and_foldered` (camera = `G225087WSFW`) |
-| 3 | Files stitched from several recordings got one time | per-event clock re-read (`event_clock`) | `test_stitched_file_event_uses_its_own_clock` (+ control with the check off → 5.5 h wrong) |
-| 4 | Videos processed in file-system order | planning pass, chronological processing | `test_cancel_stops_cleanly_and_resumes` sees the planning stage; reel order tests |
-| 5 | Reels had burnt-in text | clean ffmpeg cut (`reel_overlay=False`), index CSV/SRT | `test_reel_picture_is_unmodified` (diff < 3) + positive control with overlay (> 10) |
-| 6 | Reels in `highlights/<year>/` | `highlights/YYYY/MM-Mon/`; old-layout and empty-day reels removed | e2e + retime tests |
-| 7 | `read_frame_at` returned the frame ~0.4 s late (fps filter) | accurate seek + `-frames:v 1` | `test_read_frame_at_returns_the_exact_frame`; plate reads went from truncated (`MH12AB12`) to exact |
-| 8 | Plate format correction could turn truncated reads into plausible wrong plates | at most one substitution | `test_indian_format_fit`; mutation killed |
-| 9 | Motion-blurred plates unreadable | blind motion deblur scored by OCR + RapidOCR re-read + fusion (opt-in) | 9 px blur: plain `1` → enhanced `MH12AB1234`; `test_motion_blurred_plate_needs_enhancement` (+ negative control); full matrix in PLATES.md |
-| 10 | **Silent success**: in the packaged app every event crashed (missing torchvision op) yet videos were `done` with 0 events and the job reported success | a video whose events all fail is `error`; same error on 3 videos stops the run; app job fails when nothing was analysed | `test_broken_detector_fails_videos_instead_of_reporting_success`; packaged run before fix: "done, 0 events"; after: "failed – no video could be analysed" |
-| 11 | PyInstaller bundle lacked torchvision's `_C_stable.so` (YOLO NMS) | explicit binaries in the spec; self-test runs NMS and an offline OCR read | packaged binary: self-test exit 1 before, 0 after; real analysis through the packaged server: 5/5 videos, chronological reel |
-| 12 | Reviews existed only as an Excel drop-down (lost on every rebuild) and would be overwritten if stored in `analysis.db` (the analyzer replaces it) | `reviews.db` | `test_review_persists_across_reanalysis_sync` |
-| 13 | Stale weekly workbooks stayed after times changed | removed when their week has no events | `test_retime_fixes_already_analysed_footage` |
-| 14 | VLM failures cost a timeout on every event | circuit breaker after 3 failures | `test_dead_server_disables_vlm_after_three_failures` (5 events → exactly 3 calls) |
-| 15 | `libx264` hard-coded (absent in LGPL ffmpeg builds) | encoder auto-detect | `test_every_encoder_fallback_produces_a_playable_file` (libx264, mpeg4) |
-| 16 | App hot paths unbounded: plate search scanned every row under the GIL, all reviews loaded per request, highlights returned every day's index, date filter defeated the index | see PERFORMANCE.md | soak: 16 → 2 731 requests/25 s, 0 errors; p50 event detail 15.7 s → 34 ms |
-| 17 | Clock OCR on footage without a clock: up to ~22 s/file + seconds per event | stop after two empty frames; per-event reads only for clock-timed files | `test_footage_without_a_clock_costs_at_most_two_reads` |
-| 18 | UI race (found by CI): older folder listing overwrote the folder the user chose | latest-request-wins in folder browser, event list, plate search | UI test injects a slow response; fails without the fix (`/root` instead of the chosen folder), passes with it |
-| 19 | Footfall by track count over-counts (96 tracks on a clip with about a dozen people) | counting lines are the footfall figure; track counts labelled as an upper bound | `test_people_are_counted_crossing_the_line` |
-| 20 | Search by photo only in the notebook | shared `faces.match_identities`, app endpoint + UI | `test_search_by_photo_finds_the_person` |
-| 21 | Redaction untested | test | faces before ≥ 1, after 0; no original segment; package verifies |
-| 22 | Old databases | migration tested | `test_old_database_migrates_and_works` (original schema verbatim) |
+| 1 | **Raw `.264/.265` DVR streams unanalysable**: probe gave duration 0 and every seek returned the first frame | duration = packet count ÷ decoder fps; output-side seek; decode through the lossless remux (D17) | `test_raw_h264_stream_without_timestamps_is_timed_by_its_frames`: (fps, frames, duration) = (10, 60, 6.0), frame at 4 s ≠ frame at 0 s; the raw TrafficCam source of the case tests gets OSD times within 3 s of its clock |
+| 2 | Evidence copy cut of a raw stream began **after** the event start (copy starts at the next keyframe) | cut starts 3 s early; notes say so | `test_a_copy_cut_of_a_raw_stream_contains_the_event_start`: the event's first frame is in the cut; with the 3 s removed (mutation) it is not |
+| 3 | One certificate listed every device, but Part A is signed by the person in charge of **one** device | one certificate per source, own records and acquisition hashes, stored declarants (D19) | `test_each_device_gets_its_own_certificate_with_its_own_declarant`; two mutations (all exhibits / all devices) fail it |
+| 4 | **Face sightings across sources used the identity number**, but P-numbers are per source: "Shop P0001" found the Bank's P0001 – another person | match the picked face in other sources by SFace similarity ≥ 0.42 (D20) | `test_case_sightings.py`: Lena = Shop P0001 = Bank P0002, Bank P0001 = Messi; following Shop P0001 finds only Lena's window in the Bank; the old rule as a mutation fails the test |
+| 5 | Plate sightings had a private edit-distance copy and a different normalisation (`isalnum` keeps non-ASCII) | `plates.normalize` / `plates.within_edits` | `test_a_plate_is_found_on_both_dvrs_exact_or_within_one_edit` (`mh 12 ab-1234` = exact) |
+| 6 | **Stored absolute paths break when a drive letter changes or a case moves** (all pictures and recordings) | `storage.resolve`/`rel_to`, `Source.recording`, `Case.relink_source` with SHA-256 check (D21) | `test_a_moved_case_and_a_new_drive_letter_keep_working` (moved case + seized folders; wrong folder and one changed byte refused; reel from the new place); mutations of the fallback and of the hash check both fail it |
+| 7 | A single-folder evidence package **silently** left out the original segment when the recording was missing | the event's notes and the incident report say NOT INCLUDED and why | `test_an_evidence_package_without_its_recording_says_so` |
+| 8 | Quick investigation **created the case before validating** the run options (preset "turbo" left a half-made case) – found by my own test | `run_request` validates first | `test_quick_investigation_checks_every_folder_before_creating_anything` failed before, passes after; mutation of the duplicate-folder check fails it |
+| 9 | The global `after_request` overwrote a route's stricter CSP (certificate preview) | `setdefault` | the bundle test failed on the CSP header before, passes after |
+| 10 | Trial limit in case runs counted per source (5 × N videos) | one budget per run (`max_videos_total`), per-source hook removed (D22) | `test_the_trial_limit_counts_videos_of_the_whole_run`; mutation fails it |
+| 11 | Case-run progress bar jumped backwards (job recomputed the percent from the current source's videos) | overall percent kept for case runs | `test_case_run_progress_is_the_overall_percent_not_one_source_s`; mutation fails it |
+| 12 | Video route compared Windows `\` paths (events) with `/` paths (ingest): every recording 404 on Windows | separator normalised | `test_recordings_play_…` asks for `day1\ch01_copy.mp4` → 200 |
+| 13 | Without a display every *Add folder…* spawned a helper process and the browser logged a 501 console error | `native_dialog()` reported by `/api/fs/roots`; UI goes straight to the built-in browser (D23) | `test_the_system_folder_dialog_is_offered_only_where_it_can_open` (no subprocess started); the UI test's console is clean; mutation fails the test |
+| 14 | Timeline silently truncated at its limit | `total` returned, UI says what is left out | `test_timeline_levels_are_the_pipeline_levels` (limit 1 → total = all) |
+| 15 | Re-ID descriptor weak under background and lighting changes | background suppression, exposure normalisation, soft binning (hand-v2) | `docs/REID.md`: rank-1 17/17 (0.2 s apart) and 17/23 = 74 % (2 s apart) on real pedestrians |
+| 16 | Notebook would break when an embedded module imports a non-embedded one | build fails with the module named | positive control in the previous commit; notebook regenerated with every change |
+| 17 | Duplicate helpers (`results.rel` / `journey._rel`); level names undefined (I first used `INFO`) | `storage.rel_to`; `rules.LEVELS` | grep: one definition each; level test |
+| 18 | `run_app.bat` assumed `python` on PATH with packages, no ffmpeg, no check | rewritten: first Python with the packages (`.venv`, `python`, `py -3`), offer to install, bundled ffmpeg on PATH, `--self-test`; CRLF enforced by `.gitattributes` | CI windows job step `run_app.bat --self-test` |
+| 19 | Three mutation-check entries no longer matched the code after refactors (would have been SETUP-ERROR) | updated; 12 new mutations for the new guards | `tools/mutation_check.py`: every original found exactly once (checked), results in section 5 |
 
-Guards proven by mutation (`tools/mutation_check.py`): **23/23 killed** (22/23 in the full run; the
-survivor exposed weak test data, now fixed and killed). An earlier fast run showed a mutation
-surviving because the code it targeted was redundant. That rule was removed and the mutation
-re-targeted at the deciding rule.
+## 3. Known limitations and where I was wrong
+Limitations (not rounded up):
+* **Legal text**: the certificate follows the Bill's Schedule; the Gazette text of the Act could not
+  be retrieved (503) – UNVERIFIED, legal cell must compare. The Make in India order text could not
+  be retrieved either; the declaration template states no percentage and marks the thresholds
+  UNVERIFIED.
+* **YOLO is AGPL-3.0**: selling needs the owner's decision (unchanged from the last round). No
+  LICENSE file. The name "Drishti-AI" has not been searched for trademarks.
+* **Re-ID** is colour/texture based: people dressed alike match; 74 % rank-1 at 2 s apart on one
+  real clip; no cross-camera real-world dataset was available. The API test proves the cross-source
+  mechanics on identical footage copied to two NVRs, not re-ID quality.
+* **Describe-it search** was checked with two discriminative queries on synthetic + `vtest.avi`
+  footage, not on real CCTV of Indian streets.
+* **Drag & drop** of real OS folders is not automated: the UI test drops simulated
+  FileSystemEntry objects (the server-side location by content is real). Location searches the
+  parents of recent folders, the home folders and drive roots to depth 4 within 6 s.
+* **`run_app.bat`**: CI runs only `--self-test` on Windows; the interactive install branch (venv +
+  pip) is not executed by CI. The system folder dialog on Windows is not exercised (CI is headless).
+* UI in English only; the map is a plot of the cameras' positions, not a road map; GPU speeds not
+  measured; playback copies double the disk use of non-MP4 sources; *Remove source* (browser
+  confirm dialog) is not covered by the UI test.
 
-## 3. Known limitations (stated plainly)
-* **Selling requires an owner decision on YOLO (AGPL-3.0)**: AGPL for the whole app, an Ultralytics
-  licence, or a different detector. No replacement detector was built this round.
-  `docs/COMMERCIAL-READINESS.md`. The repository has no LICENSE file.
-* Licences need the owner's signing key (`docs/CREDENTIAL-TASKS.md` #1). Until then the app runs in
-  trial mode. Code signing of the exe needs a certificate (#2).
-* Licences gate only the packaged app. The open-source package/CLI are not gated (decision D9).
-* Plates: measured on synthetic blur of a real car photo, not on a real-world plate dataset (none
-  available). Enhancement recovers 5–9 px blur at ~70–96 px plate width, not 15 px blur or ~56 px
-  plates. One enhanced result was a confident-looking wrong plate (`MH22AB1234`, confidence 0.34).
-  Low-confidence reads must be checked by eye.
-* The OpenAI-compatible provider was tested against a fake server that checks the documented wire
-  format. No real Ollama/LM Studio/vLLM server was run here. The default Qwen3-VL-2B was not run
-  (CPU RAM); the built-in provider was verified with SmolVLM-256M.
-* `libopenh264` encoder path (used with LGPL ffmpeg) was not available locally and is untested; the
-  Windows build depends on it or falls back to MPEG-4 (plays in VLC; browsers may not play MPEG-4 Part 2).
-* The Windows exe is built and self-tested only in CI (no Windows machine here). The Linux bundle
-  from the same spec was built and run end to end.
-* Headless Chromium in the UI test cannot decode H.264, so in-browser video *playback* is not
-  covered by tests. Range requests (206) and the player wiring are.
-* GPU paths (CUDA decode, GPU inference) were not exercised (no GPU).
-* Footfall counts depend on tracking quality. Person-track counts are an upper bound.
-* Search by photo and face identities use SFace similarity thresholds tuned by the original author.
-  Not re-validated on real CCTV faces.
-
-Where I was wrong during the round (corrected):
-* My first deblur prototype used an odd-only blur-length grid, and the true length was even.
-* I first concluded the deblur "does not work on compressed video". The real problem was the plate
-  OCR's sensitivity to ringing; RapidOCR re-reads fixed it.
-* My first exact-frame test assumed codec-exact pixel values.
-* Twice I committed while ruff/mypy failed (exit codes masked by `| tail`). Each was fixed in the
-  next commit, and commits now go through a script that stops on failure.
-* The "two early readings" rule in the OSD start logic was redundant (shown by mutation testing).
-* The first packaged-app self-test passed on a broken bundle (too weak). It now executes NMS and OCR.
-* The first UI race test passed without the fix (the delay was too short to matter).
-* The estimator's default rates first claimed a measurement that hadn't been made. They were then measured.
+Where I was wrong this round:
+* My first certificate design (one certificate for all devices) was legally wrong (finding 3).
+* My first `sightings` treated equal face numbers as the same person (finding 4) – caught by the
+  test I wrote for it.
+* My first Quick investigation endpoint validated after creating the case (finding 8).
+* I used level `INFO` in the first timeline API; the pipeline's levels are HIGH/REVIEW/LOW/NORMAL.
+* A CLAHE test expectation was wrong and one assertion was vacuous (`or True`); both corrected.
+* My drag & drop test fake called its callback synchronously and recursed forever; Playwright's
+  `wait_for_function` with a plain string violated the page's CSP – both test-code errors, fixed.
+* Commit `ef9ede8` was pushed after the targeted suite only; its full run was confirmed by CI
+  (lint, test, windows-app green) rather than locally first. One local background full run was
+  killed by a sandbox restart and had to be repeated.
+* Local mypy (in `.venv`) reports stub errors that CI's environment (ruff/mypy/nbformat only)
+  does not; all type checks quoted here use a CI-equivalent environment.
 
 ## 4. Infrastructure, process and code improvements
-CI workflow (lint · mypy · notebook sync · full tests incl. Playwright · app self-test · Windows
-build, artifact upload, failure summaries posted on the PR); ruff + mypy configuration, both clean;
-deterministic notebook generation; `tools/mutation_check.py`; `tools/soak.py`; release-credential
-tests; PyInstaller spec + Windows build script with self-test; single sources for presets,
-time resolution, face enrolment, plate matching and the clock-reading rule; documentation set
-with index and lifecycle status (`docs/INDEX.md`).
+* CI: test-model cache key covers the new case tests (SigLIP-2 is downloaded once and cached);
+  windows-app job runs `run_app.bat --self-test`.
+* Self-test now also checks the case API, the certificate PDF, the forensic filters and the
+  appearance vector (positive control: a broken PDF builder makes it exit 1).
+* `app/common.py` holds the request helpers once; case endpoints live in their own module
+  (`case_api.register`), registered by the server; UI split into `app.js` (helpers, single-folder
+  screens) and `case.js` (case screens) with a `TAB_HOOKS` seam.
+* Mutation harness: 3 entries repaired, 12 added (32 → 36 entries).
+* Documentation: index updated with lifecycle status, previous status archived, decisions D19–D23.
 
-## 5. Verification on clean machines (GitHub Actions)
-On commit `7a0c369`: **lint ✓** (ruff, mypy, notebook in sync), **test ✓** (full suite incl. the
-Playwright browser test, ubuntu-latest, clean install), **windows-app ✓** (`CCTVAnalysis.exe` built on
-windows-latest with an LGPL ffmpeg; its self-test (modules, UI, ffmpeg, torchvision NMS, offline OCR)
-passed). Locally: 74 passed / 2 release-only deselected (8 min 53 s); mutation check 23/23.
-Two CI-only failures were found and fixed on the way (rows 18 and the UI-test wait in `7a0c369`).
-
-## 6. Commits (in order, all on `origin/feature/enterprise-cctv-platform`, merged to `main` via PR #1)
+## 5. Commits (all on `origin/engineering/foundation`)
 | commit | summary |
 |---|---|
-| ff668a2 | timeline fix (DVR clock OCR, folder-date checks, per-event clock), chronological planning, clean reels in YYYY/MM-Mon, camera naming |
-| 6b9ab07 | desktop app, licences, evidence export, audit log, reviews, ANPR, exact-frame seek fix |
-| 4f10092 | plate tests, faster deblur, Playwright UI test |
-| c074864 | retime of analysed folders; stale reels/weekly workbooks removed |
-| 3a229b2 | Number Plates / Footfall sheets, reviews in Excel, footfall test on real footage |
-| b05705a | no silent success, VLM breaker, encoder auto-detect, packaging, CI, lint/types, mutation harness, docs |
-| b05c395 | packaging: torchvision operators bundled; release-credential tests; docs |
-| c278bad | hot-path optimisations (soak 16 → 2 731 requests/25 s) |
-| 8b962fa | type annotation fix |
-| 73a8270 | notebook regenerated; secrets ignored |
-| 97ab2a3 | migration and reel-selection tests |
-| babea31 | lint fix |
-| bd21208 | clock-reading cost bounded; measured estimator defaults; README |
-| 0554a4a | search by photo; upload limits; CI concurrency |
-| 31efd72 | reel-order test data fixed (mutation survivor); CI failure summaries on the PR; docs |
-| abe7dd0 | UI race fix (latest request wins) with failing-without-fix test |
-| 4907d13 | redaction test |
-| 7a0c369 | UI test waits for its own query; status document |
-| (this commit) | status document: CI results and commit list |
+| 20b06e3 | investigation core: cases, ingest, re-ID, forensic filters, journey, Section 63 bundle, raw-stream fix |
+| ef9ede8 | one Section 63 certificate per device, stored declarants, bundle README, verification of every certificate |
+| (filled at round close) | |

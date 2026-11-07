@@ -22,8 +22,16 @@ def make(out, actors, secs=50, W=960, H=540, fps=10):
                 f[y:y + img.shape[0], x:x + img.shape[1]] = img
         vw.write(f)
     vw.release()
-lena = cv2.resize(cv2.imread("test_data/lena.jpg"), (300, 300))
-messi = cv2.imread("test_data/messi5.jpg")[0:342, 150:400]
-messi = cv2.resize(messi, (250, 342))
-make(sys.argv[1], [(lena, 5, 20, 120), (messi, 28, 44, 100)])
-make(sys.argv[2], [(lena, 8, 25, 140)], secs=35)
+
+
+def actors(folder="test_data"):
+    """(lena, messi) face images from the OpenCV sample photos in `folder`."""
+    lena = cv2.resize(cv2.imread(f"{folder}/lena.jpg"), (300, 300))
+    messi = cv2.resize(cv2.imread(f"{folder}/messi5.jpg")[0:342, 150:400], (250, 342))
+    return lena, messi
+
+
+if __name__ == "__main__":
+    lena, messi = actors()
+    make(sys.argv[1], [(lena, 5, 20, 120), (messi, 28, 44, 100)])
+    make(sys.argv[2], [(lena, 8, 25, 140)], secs=35)

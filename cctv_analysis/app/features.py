@@ -77,4 +77,5 @@ def describe():
         default = APP_DEFAULTS.get(key, getattr(d, key))
         out.append({"key": key, "label": label, "group": group, "type": typ, "help": help_, "cost": cost,
                     "default": default})
-    return {"groups": GROUPS, "fields": out, "presets": PRESET_LABELS}
+    from ..reid import COLOR_NAMES
+    return {"groups": GROUPS, "fields": out, "presets": PRESET_LABELS, "clothing_colors": list(COLOR_NAMES)}

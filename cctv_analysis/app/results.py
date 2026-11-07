@@ -15,6 +15,7 @@ import threading
 from typing import Optional
 
 from ..plates import normalize, within_edits
+from ..storage import rel_to
 
 LEVELS = ("HIGH", "REVIEW", "LOW", "NORMAL")
 
@@ -48,17 +49,6 @@ def _j(s, default):
         return json.loads(s)
     except (TypeError, json.JSONDecodeError):
         return default
-
-
-def rel(out: str, path: Optional[str]) -> str:
-    """Path relative to the output folder, '' when outside it or missing."""
-    if not path:
-        return ""
-    try:
-        r = os.path.relpath(os.path.abspath(path), os.path.abspath(out))
-    except ValueError:
-        return ""
-    return "" if r.startswith("..") else r.replace(os.sep, "/")
 
 
 _SUMMARY: dict = {}
@@ -166,7 +156,7 @@ def events(out: str, day_from: str = "", day_to: str = "", camera: str = "", lev
                       "start": r["start_dt"], "end": r["end_dt"], "duration": r["duration"], "kind": r["kind"],
                       "people": r["max_persons"], "plates": _j(r["plates"], []), "identities": _j(r["identities"], []),
                       "flags": [f["flag"] for f in _j(r["flags"], [])],
-                      "thumb": rel(out, _best_snapshot(_j(r["snapshots"], []))),
+                      "thumb": rel_to(out, _best_snapshot(_j(r["snapshots"], []))),
                       "approx_time": not ((r["time_source"] or "").startswith(("filename", "osd", "override"))),
                       "review": r["review"] or "Not reviewed"})
     return {"total": total, "limit": limit, "offset": offset, "items": items}
@@ -197,15 +187,16 @@ def event_detail(out: str, event_id: str) -> Optional[dict]:
             "ai": {"description": vlm.get("description", ""), "suspicious": vlm.get("suspicious"),
                    "category": vlm.get("category", "")} if vlm else None,
             "objects": _j(e["objects"], {}), "people": e["max_persons"], "crossings": _j(e["crossings"], {}),
-            "snapshots": [{"t": s.get("t_off"), "time": s.get("dt"), "annotated": rel(out, s.get("annotated")),
-                           "raw": rel(out, s.get("raw"))} for s in snaps],
-            "contact_sheet": rel(out, e["contact_sheet"]), "clip": rel(out, e["clip_path"]),
+            "snapshots": [{"t": s.get("t_off"), "time": s.get("dt"), "annotated": rel_to(out, s.get("annotated")),
+                           "raw": rel_to(out, s.get("raw"))} for s in snaps],
+            "contact_sheet": rel_to(out, e["contact_sheet"]), "clip": rel_to(out, e["clip_path"]),
             "tracks": [{"track": t["track"], "cls": t["cls"], "identity": t["known_name"] or t["identity"] or "",
-                        "watchlist": t["watchlist"] or "", "seconds": t["duration"], "face": rel(out, t["face_crop"]),
-                        "person": rel(out, t["person_crop"])} for t in tracks],
+                        "identity_id": t["identity"] or "",
+                        "watchlist": t["watchlist"] or "", "seconds": t["duration"], "face": rel_to(out, t["face_crop"]),
+                        "person": rel_to(out, t["person_crop"])} for t in tracks],
             "plates": [{"track": p["track"], "vehicle": p["vehicle"], "text": p["text"], "confidence": p["confidence"],
-                        "valid_format": bool(p["valid_format"]), "method": p["method"], "crop": rel(out, p["crop_path"]),
-                        "enhanced": rel(out, p["enhanced_path"]), "watchlist": p["watchlist"] or "", "time": p["dt"]}
+                        "valid_format": bool(p["valid_format"]), "method": p["method"], "crop": rel_to(out, p["crop_path"]),
+                        "enhanced": rel_to(out, p["enhanced_path"]), "watchlist": p["watchlist"] or "", "time": p["dt"]}
                        for p in plates],
             "review": dict(rv) if rv else None}
 
@@ -218,7 +209,7 @@ def highlights(out: str) -> list:
                           "GROUP BY day ORDER BY day DESC").fetchall()
     finally:
         db.close()
-    return [{"day": r["day"], "reel": rel(out, r["reel"]), "movements": r["n"], "seconds": r["secs"]} for r in rows]
+    return [{"day": r["day"], "reel": rel_to(out, r["reel"]), "movements": r["n"], "seconds": r["secs"]} for r in rows]
 
 
 def highlight_day(out: str, day: str) -> Optional[dict]:
@@ -231,7 +222,7 @@ def highlight_day(out: str, day: str) -> Optional[dict]:
         db.close()
     if not segs:
         return None
-    return {"day": day, "reel": rel(out, segs[0]["reel_path"]), "movements": len(segs), "seconds": segs[-1]["reel_end"],
+    return {"day": day, "reel": rel_to(out, segs[0]["reel_path"]), "movements": len(segs), "seconds": segs[-1]["reel_end"],
             "index": [{"n": s["idx"], "at": s["reel_start"], "until": s["reel_end"], "camera": s["camera"],
                        "time": s["start_dt"], "level": s["level"], "score": s["score"], "event_id": s["event_id"],
                        "video": s["rel_path"], "offset": s["start_off"]} for s in segs]}
@@ -275,7 +266,7 @@ def plates_search(out: str, q: str = "", max_edits: int = 1, limit: int = 100) -
         db.close()
     return [{"text": r["text"], "confidence": r["confidence"], "valid_format": bool(r["valid_format"]),
              "time": r["dt"], "camera": r["camera"], "event_id": r["event_id"], "vehicle": r["vehicle"],
-             "crop": rel(out, r["crop_path"]), "enhanced": rel(out, r["enhanced_path"]),
+             "crop": rel_to(out, r["crop_path"]), "enhanced": rel_to(out, r["enhanced_path"]),
              "watchlist": r["watchlist"] or ""} for r in rows]
 
 
@@ -291,7 +282,7 @@ def faces(out: str, limit: int = 300) -> list:
     finally:
         db.close()
     return [{"identity": r["identity"], "name": r["name"] or "", "events": r["events"], "first": r["first"],
-             "last": r["last"], "cameras": sorted(set((r["cams"] or "").split(","))), "sample": rel(out, r["sample"]),
+             "last": r["last"], "cameras": sorted(set((r["cams"] or "").split(","))), "sample": rel_to(out, r["sample"]),
              "new": r["identity"] in new} for r in rows]
 
 
@@ -304,7 +295,7 @@ def appearances(out: str, matches) -> list:
             rows = db.execute("SELECT t.event_id, t.first_dt, t.face_crop, e.camera, e.rel_path, t.first_off FROM tracks t "
                               "JOIN events e USING(event_id) WHERE t.identity=? ORDER BY t.first_dt LIMIT 200",
                               (pid,)).fetchall()
-            res.append({"identity": pid, "similarity": round(sim, 3), "sample": rel(out, rows[0]["face_crop"]) if rows else "",
+            res.append({"identity": pid, "similarity": round(sim, 3), "sample": rel_to(out, rows[0]["face_crop"]) if rows else "",
                         "appearances": [{"event_id": r["event_id"], "time": r["first_dt"], "camera": r["camera"],
                                          "video": r["rel_path"], "offset": r["first_off"]} for r in rows]})
     finally:

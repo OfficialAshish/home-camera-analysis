@@ -36,7 +36,9 @@ H, W = 128, 64
 HUE_BINS, SAT_BINS, GREY_BINS = 12, 3, 6
 PARTS = (("head", 0.0, 0.18, 0.3), ("upper", 0.18, 0.55, 1.0), ("lower", 0.55, 1.0, 0.8))
 INDEX = "appearance_index.npz"
-COLOR_NAMES = ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink")
+# every name color_name() can return (the app's clothing-colour filter offers exactly these)
+COLOR_NAMES = ("black", "grey", "white", "red", "orange", "brown", "yellow", "green", "cyan", "blue", "purple",
+               "pink")
 HUE_EDGES = (0, 8, 20, 33, 78, 95, 128, 150, 170, 180)        # OpenCV hue (0..180) → name (red wraps)
 HUE_NAME = ("red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "red")
 VERSION = "hand-v2"
@@ -235,6 +237,7 @@ def _tracks(out_dir: str) -> List[dict]:
 def build_index(out_dir: str, model: Optional[OnnxReID] = None, batch: int = 32) -> dict:
     """Appearance vectors of every person track of one analysed folder (incremental)."""
     from .resources import governor
+    from .storage import rel_to, resolve
     path = os.path.join(out_dir, INDEX)
     old: Dict[str, int] = {}
     keys: List[str] = []
@@ -259,18 +262,15 @@ def build_index(out_dir: str, model: Optional[OnnxReID] = None, batch: int = 32)
         okeys, ometa, ovecs, odeep = [], [], None, None
     todo = []
     for r in _tracks(out_dir):
-        crop = r["person_crop"]
-        if not os.path.isabs(crop):
-            crop = os.path.join(out_dir, crop)
-        try:
-            mt = int(os.path.getmtime(crop))
-        except OSError:
+        crop = resolve(out_dir, r["person_crop"])          # follows a moved output folder
+        if not crop:
             continue
+        mt = int(os.path.getmtime(crop))
         key = f"{r['event_id']}|{r['track']}|{mt}"
         m = {k: r[k] for k in ("event_id", "track", "first_dt", "first_off", "duration", "identity", "known_name",
                                "camera", "start_dt", "rel_path", "start_off")}
         m["person_crop"] = os.path.relpath(crop, out_dir).replace(os.sep, "/")
-        m["face_crop"] = os.path.relpath(r["face_crop"], out_dir).replace(os.sep, "/") if r["face_crop"] else ""
+        m["face_crop"] = rel_to(out_dir, r["face_crop"])
         if key in old and ovecs is not None:
             i = old[key]
             keys.append(key)
@@ -374,5 +374,5 @@ def search(sources: Sequence[dict], q_hand: np.ndarray, q_deep: Optional[np.ndar
     return out
 
 
-__all__ = ["OnnxReID", "appearance", "build_index", "color_name", "learned_model", "load_index", "query_vector",
+__all__ = ["COLOR_NAMES", "OnnxReID", "appearance", "build_index", "color_name", "learned_model", "load_index", "query_vector",
            "search", "similarity"]

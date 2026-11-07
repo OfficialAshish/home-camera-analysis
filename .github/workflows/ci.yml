@@ -39,13 +39,14 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .test_models
-          key: test-models-v1-${{ hashFiles('cctv_analysis/config.py', 'cctv_analysis/plates.py') }}
-          restore-keys: test-models-v1-
+          # the case tests download SigLIP-2 (scene search) into this cache as well
+          key: test-models-v2-${{ hashFiles('cctv_analysis/config.py', 'cctv_analysis/plates.py', 'tests/test_case_api.py', 'tests/test_ui_cases_playwright.py') }}
+          restore-keys: test-models-
       - name: Environment used for this run
         run: |
           python --version; ffmpeg -hide_banner -version | head -1
           env | grep -E '^(NODE_ENV|CCTV_|HF_|PYTHONPATH)=' || true
-      - name: Tests (unit, pipeline e2e, app API, browser UI, plates, VLM providers)
+      - name: Tests (unit, pipeline e2e, cases, app API, browser UI, plates, VLM providers)
         shell: bash
         run: |
           set -o pipefail
@@ -71,6 +72,9 @@ jobs:
       - name: Build CCTVAnalysis.exe
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+      - name: One-click launcher (run_app.bat) finds Python and passes the self-test from the source checkout
+        shell: cmd
+        run: run_app.bat --self-test
       - uses: actions/upload-artifact@v4
         with:
           name: CCTVAnalysis-windows

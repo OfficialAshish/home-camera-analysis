@@ -122,3 +122,34 @@ the Schedule of the Bharatiya Sakshya (Second) Bill, 2023 as enacted (source and
 by the legal cell (UNVERIFIED). *Why.* A Section 63 certificate is a statement by a person; the
 tool must not put words in a declarant's mouth.
 
+
+## D19 — One Section 63 certificate per source device
+*Context.* Part A is signed by "a person in charge of the computer or communication device"; a
+shop owner can vouch for his DVR and for nothing else. *Decision.* `build_bundle` writes one
+certificate per source that contributes a record, listing only that device, its records and its
+acquisition hashes; Part B is the same expert on each. Declarants are stored (Part A per source,
+Part B per case) and audited. *Consequence.* A three-DVR bundle carries three certificates.
+
+## D20 — Face identities are per source; across sources a face is matched by similarity
+*Context.* Each source's pipeline clusters faces into P0001, P0002 … independently; the first
+version of `sightings` treated the same number in two sources as the same person (proved wrong by
+`tests/test_case_sightings.py`). *Decision.* A P-number is always qualified by its source; other
+sources are searched by SFace cosine ≥ `face_match_threshold` against their identities. Enrolled
+names stay global.
+
+## D21 — Stored paths are resolved at read time, recordings from the source's current folder
+*Context.* `analysis.db` stores absolute paths; drive letters change and cases move.
+*Decision.* Readers use `storage.resolve`/`rel_to` (longest existing trailing part under the
+current output folder) and `Source.recording(rel_path)`; a moved seized folder is relinked only
+after its recordings match the acquisition hashes. *Why not rewrite the database?* The analysis
+output is evidence-adjacent and shared with the single-folder screens; read-time resolution
+changes nothing on disk.
+
+## D22 — The trial limit counts videos of the whole case run
+*Decision.* `run_case(max_videos_total=TRIAL_MAX_VIDEOS)` spends one budget across sources; the
+per-source `apply_limits` hook was removed so the limit has one meaning ("videos per job").
+
+## D23 — Offer the system folder dialog only where it can open
+*Decision.* `server.native_dialog()` (tkinter importable, and a display on Linux) is reported by
+`/api/fs/roots`; the UI goes straight to the built-in folder browser otherwise and `/api/fs/pick`
+answers 501 without starting a helper process.

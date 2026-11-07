@@ -1,5 +1,6 @@
 "use strict";
-// CCTV Analysis desktop UI. All data is inserted with textContent (never innerHTML).
+// Drishti-AI desktop UI (single-folder screens and shared helpers; case screens are in case.js).
+// All data is inserted with textContent (never innerHTML).
 const TOKEN = document.querySelector('meta[name="cctv-token"]').content;
 const $ = (id) => document.getElementById(id);
 const S = { features: null, job: null, poll: null, resOut: "", offset: 0, limit: 48, detail: null, fbTarget: null };
@@ -56,6 +57,7 @@ function stale(k, n) { return SEQ[k] !== n; }
 
 // --------------------------------------------------------------------- tabs
 document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+const TAB_HOOKS = {};             // tab name -> function run when the tab is shown (case.js adds the case tabs)
 function showTab(t) {
   document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   document.querySelectorAll(".tab").forEach(s => s.classList.toggle("on", s.id === "tab-" + t));
@@ -63,6 +65,7 @@ function showTab(t) {
   if (t === "faces") loadFaces();
   if (t === "export") renderExport();
   if (t === "settings") loadSettings();
+  if (TAB_HOOKS[t]) TAB_HOOKS[t]();
 }
 
 // -------------------------------------------------------------- setup form
@@ -199,14 +202,23 @@ async function pollJob() {
     const p = j.progress || {};
     $("job-bar").style.width = (p.percent || 0) + "%";
     const stage = { planning: "Reading recording times", video: "Analysing video", motion: "Scanning for movement",
-      event: "Analysing movement", reports: "Building reports and highlight videos", finished: "Finished", discovering: "Finding videos" }[p.stage] || p.stage || j.status;
-    $("job-stage").textContent = `${stage}${p.total ? ` · video ${p.index || 0} of ${p.total}` : ""}${p.events ? ` · movement ${p.event_index} of ${p.events}` : ""} · ${Math.round(p.percent || 0)}%`;
+      event: "Analysing movement", reports: "Building reports and highlight videos", finished: "Finished", discovering: "Finding videos",
+      ingest: "Starting", hashing: "Computing SHA-256 of the seized files", remuxing: "Making lossless playback copies",
+      "appearance index": "Indexing people's appearance" }[p.stage] || p.stage || j.status;
+    const src = p.sources ? `Source ${p.source_index} of ${p.sources} (${p.source_label}) · ` : "";
+    const unit = ["hashing", "remuxing"].includes(p.stage) ? "file" : "video";
+    $("job-stage").textContent = `${src}${stage}${p.total ? ` · ${unit} ${p.index || 0} of ${p.total}` : ""}${p.events ? ` · movement ${p.event_index} of ${p.events}` : ""} · ${Math.round(p.percent || 0)}%`;
     $("job-eta").textContent = j.status === "running" && p.eta_seconds ? "about " + hms(p.eta_seconds) + " left" : j.status;
     $("job-file").textContent = p.path || "";
     $("job-log").textContent = (j.log || []).join("\n");
     $("job-log").scrollTop = 1e9;
     $("btn-cancel").disabled = !["running", "queued"].includes(j.status);
     if (["running", "queued"].includes(j.status)) S.poll = setTimeout(pollJob, 1500);
+    $("btn-open-results").textContent = j.result && j.result.case_id ? "Open the case timeline" : "Open results";
+    if (j.status === "done" && j.result && j.result.case_id) {
+      const bad = Object.entries(j.result.sources || {}).filter(([, v]) => v.error || v.skipped);
+      toast(bad.length ? `Finished. ${bad.map(([k, v]) => k + ": " + (v.error || v.skipped)).join("; ")}` : "Investigation finished – open the case timeline.", bad.length > 0);
+    }
     else if (j.status === "done") {
       const st = (j.result && j.result.stats) || {};
       if (st.videos_failed || st.events_failed || st.aborted)
@@ -221,7 +233,10 @@ $("btn-cancel").addEventListener("click", async () => {
   await api("POST", "/api/jobs/" + S.job.id + "/cancel", {});
   toast("Stopping after the current step… finished videos are kept; the rest continues next time.");
 });
-$("btn-open-results").addEventListener("click", () => { addResultFolder(S.resOut || $("out-dir").value.trim()); showTab("results"); loadResults(); });
+$("btn-open-results").addEventListener("click", () => {
+  if (S.job && S.job.result && S.job.result.case_id) { selectCase(S.job.result.case_id, "investigate"); return; }
+  addResultFolder(S.resOut || $("out-dir").value.trim()); showTab("results"); loadResults();
+});
 
 // ------------------------------------------------------------------- results
 function fillResultFolders(list) {
@@ -476,6 +491,7 @@ async function loadDir(p) {
     const roots = await api("GET", "/api/fs/roots");
     if (stale("dir", n)) return;
     clear($("fb-roots"), roots.roots.map(x => el("button", { text: x, onclick: () => loadDir(x) })));
+    $("fb-native").classList.toggle("hidden", !roots.native_dialog);
   } catch (e) { if (!stale("dir", n)) toast(e.message, true); }
 }
 $("fb-close").addEventListener("click", () => $("fb").classList.add("hidden"));

@@ -34,8 +34,9 @@ from .. import __version__
 from .. import licensing as LIC
 from ..audit import AuditLog
 from ..config import PRESETS, VIDEO_EXTENSIONS, Config
-from . import features
+from . import case_api, features
 from . import results as RS
+from .common import ApiError, abs_dir, inside
 from .jobs import JobManager
 
 log = logging.getLogger("cctv")
@@ -50,12 +51,6 @@ def default_data_dir() -> str:
     if sys.platform == "darwin":
         return os.path.expanduser("~/Library/Application Support/CCTVAnalysis")
     return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "cctv-analysis")
-
-
-class ApiError(Exception):
-    def __init__(self, status: int, message: str, **extra):
-        super().__init__(message)
-        self.status, self.message, self.extra = status, message, extra
 
 
 class RateLimiter:
@@ -77,7 +72,8 @@ class RateLimiter:
 
 class Settings:
     """App preferences (settings.json) + secrets (secrets.json, owner-only permissions)."""
-    KEYS = {"recent_inputs": list, "recent_outputs": list, "last_config": dict, "operator": str, "language": str}
+    KEYS = {"recent_inputs": list, "recent_outputs": list, "last_config": dict, "operator": str, "language": str,
+            "cases_root": str}
 
     def __init__(self, data_dir: str):
         self.path = os.path.join(data_dir, "settings.json")
@@ -133,26 +129,15 @@ class Settings:
             os.replace(self.secret_path + ".tmp", self.secret_path)
 
 
-def _abs_dir(p: str, field: str, must_exist: bool = True) -> str:
-    if not isinstance(p, str) or not p.strip():
-        raise ApiError(400, f"{field} is required")
-    p = os.path.abspath(os.path.expanduser(p.strip()))
-    if must_exist and not os.path.isdir(p):
-        raise ApiError(400, f"{field}: folder not found: {p}")
-    return p
-
-
-def _inside(base: str, rel_path: str) -> str:
-    """Resolve rel_path under base; refuse anything that escapes it (.., absolute, symlinks)."""
-    if not rel_path or "\x00" in rel_path:
-        raise ApiError(400, "path required")
-    base_r = os.path.realpath(base)
-    full = os.path.realpath(os.path.join(base_r, rel_path))
-    if os.path.commonpath([base_r, full]) != base_r:
-        raise ApiError(403, "path outside the output folder")
-    if not os.path.isfile(full):
-        raise ApiError(404, "file not found")
-    return full
+def native_dialog() -> bool:
+    """Can this computer show the system folder dialog (tkinter, and a display on Linux)?"""
+    if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        return False
+    try:
+        import tkinter  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port: int = 8765,
@@ -186,14 +171,18 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         if path == "/":
             return None
         if path.startswith("/api/"):
-            media = request.method == "GET" and (path == "/api/file" or path.startswith("/api/exports/"))
+            media = request.method == "GET" and (path == "/api/file" or path.startswith("/api/exports/") or
+                                                 case_api.is_media(path))
             hdr = request.headers.get("X-CCTV-Token", "")
             ck = request.cookies.get(COOKIE, "")
             ok = hmac.compare_digest(hdr, token) or (media and hmac.compare_digest(ck, token))
             if not ok:
                 return jsonify(error="not authorised – open the app from its launcher"), 401
             if request.method != "GET":
-                if not limiter.allow("w:" + path.split("/")[2], 60, 60):
+                seg = path.split("/")
+                key = seg[2] if seg[2] != "cases" else "cases:" + seg[-1]
+                # Forensic Studio previews follow the sliders (debounced in the page): a higher budget
+                if not limiter.allow("w:" + key, 300 if key == "cases:preview" else 60, 60):
                     return jsonify(error="too many requests, slow down"), 429
             elif not limiter.allow("r", 1200, 60):
                 return jsonify(error="too many requests, slow down"), 429
@@ -205,11 +194,12 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         resp.headers["X-Content-Type-Options"] = "nosniff"
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
-        resp.headers["Content-Security-Policy"] = ("default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
-                                                   "script-src 'self'; style-src 'self'; frame-ancestors 'none'; "
-                                                   "base-uri 'none'; form-action 'self'")
+        # a route may set a stricter policy of its own (the printable certificate: no script at all)
+        resp.headers.setdefault("Content-Security-Policy", "default-src 'self'; img-src 'self' data: blob:; "
+                                "media-src 'self' blob:; script-src 'self'; style-src 'self'; frame-ancestors 'none'; "
+                                "base-uri 'none'; form-action 'self'")
         if request.path.startswith("/api/") and request.path not in ("/api/file",) and \
-                not request.path.startswith("/api/exports/"):
+                not request.path.startswith("/api/exports/") and not case_api.is_media(request.path):
             resp.headers["Cache-Control"] = "no-store"
         return resp
 
@@ -242,7 +232,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         return d
 
     def out_param() -> str:
-        return _abs_dir(request.args.get("out", ""), "out")
+        return abs_dir(request.args.get("out", ""), "out")
 
     # ---------------------------------------------------------------- page
     @app.get("/")
@@ -255,7 +245,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
             resp.set_cookie(COOKIE, token, httponly=True, samesite="Strict", secure=False)
             return resp
         if not hmac.compare_digest(request.cookies.get(COOKIE, ""), token):
-            return Response("<h3>Open the CCTV Analysis app from its desktop shortcut.</h3>", 401,
+            return Response("<h3>Open Drishti-AI (CCTV Analysis) from its desktop shortcut or run_app.bat.</h3>", 401,
                             mimetype="text/html")
         with open(os.path.join(STATIC, "index.html"), encoding="utf-8") as fh:
             page = fh.read().replace("{{TOKEN}}", token).replace("{{VERSION}}", __version__)
@@ -304,6 +294,13 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     @app.put("/api/settings")
     def settings_put():
         d = body()
+        if d.get("cases_root"):
+            root = abs_dir(d["cases_root"], "cases_root", must_exist=False)
+            if not os.path.isdir(os.path.dirname(root)):
+                raise ApiError(400, f"cases_root: the folder {os.path.dirname(root)} does not exist")
+            os.makedirs(root, exist_ok=True)
+            d["cases_root"] = root
+            app_audit.append("cases_root_changed", path=root)
         if "vlm_api_key" in d:
             v = d.pop("vlm_api_key")
             if not isinstance(v, str) or len(v) > 500:
@@ -334,11 +331,11 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
             roots += [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
         else:
             roots += [p for p in ("/", "/media", "/mnt", "/Volumes") if os.path.isdir(p)]
-        return jsonify(roots=roots, recent=settings.load())
+        return jsonify(roots=roots, recent=settings.load(), native_dialog=native_dialog())
 
     @app.get("/api/fs/list")
     def fs_list():
-        p = _abs_dir(request.args.get("path", "") or os.path.expanduser("~"), "path")
+        p = abs_dir(request.args.get("path", "") or os.path.expanduser("~"), "path")
         exts = {e.lower() for e in VIDEO_EXTENSIONS}
         dirs, videos = [], 0
         try:
@@ -362,13 +359,15 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     @app.post("/api/fs/mkdir")
     def fs_mkdir():
         p = body().get("path", "")
-        p = _abs_dir(p, "path", must_exist=False)
+        p = abs_dir(p, "path", must_exist=False)
         os.makedirs(p, exist_ok=True)
         return jsonify(path=p)
 
     @app.post("/api/fs/pick")
     def fs_pick():
         """Native folder dialog via a helper process (tkinter). 501 when not available."""
+        if not native_dialog():
+            raise ApiError(501, "folder dialog not available – use the folder browser")
         args = [sys.executable, "--pick-folder"] if getattr(sys, "frozen", False) else \
             [sys.executable, "-m", "cctv_analysis.app", "--pick-folder"]
         try:
@@ -388,8 +387,8 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         if preset not in PRESETS:
             raise ApiError(400, f"preset must be one of {list(PRESETS)}")
         merged = {**PRESETS[preset], **features.APP_DEFAULTS, **cfg_in}
-        merged["input_dir"] = _abs_dir(merged.get("input_dir", ""), "input_dir")
-        merged["output_dir"] = _abs_dir(merged.get("output_dir", ""), "output_dir", must_exist=False)
+        merged["input_dir"] = abs_dir(merged.get("input_dir", ""), "input_dir")
+        merged["output_dir"] = abs_dir(merged.get("output_dir", ""), "output_dir", must_exist=False)
         inp, outp = os.path.realpath(merged["input_dir"]), os.path.realpath(merged["output_dir"])
         if outp == inp:
             raise ApiError(400, "choose an output folder different from the recordings folder")
@@ -625,13 +624,13 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
 
     @app.get("/api/file")
     def file_():
-        full = _inside(out_param(), request.args.get("p", ""))
+        full = inside(out_param(), request.args.get("p", ""))
         return send_file(full, conditional=True, max_age=3600)
 
     @app.post("/api/retime")
     def retime_start():
         """Re-read recording times of an analysed folder (uses its saved config_used.json)."""
-        out = _abs_dir(body().get("out", ""), "out")
+        out = abs_dir(body().get("out", ""), "out")
         cu = os.path.join(out, "config_used.json")
         if not os.path.exists(cu):
             raise ApiError(404, "this folder has no config_used.json – it was not produced by an analysis")
@@ -666,7 +665,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     def export():
         from ..evidence import export_evidence
         d = body()
-        out = _abs_dir(d.get("out", ""), "out")
+        out = abs_dir(d.get("out", ""), "out")
         ids = d.get("event_ids")
         if not isinstance(ids, list) or not ids or len(ids) > 500 or not all(isinstance(x, str) for x in ids):
             raise ApiError(400, "event_ids: list of 1-500 event ids required")
@@ -694,7 +693,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     def export_get(name):
         if not re.fullmatch(r"evidence_[A-Za-z0-9_-]+\.zip", name):
             raise ApiError(400, "bad file name")
-        full = _inside(os.path.join(out_param(), "exports"), name)
+        full = inside(os.path.join(out_param(), "exports"), name)
         return send_file(full, as_attachment=True, download_name=name)
 
     @app.get("/api/audit")
@@ -725,4 +724,5 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         job, _ = jobs.start("download", run)
         return jsonify(job=job.public()), 202
 
+    case_api.register(app, jobs=jobs, settings=settings, lic_status=lic_status, body=body, data_dir=data_dir)
     return app

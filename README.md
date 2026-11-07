@@ -1,5 +1,16 @@
 # 🎥 home-camera-analysis — CCTV footage triage for homes, shops, malls and security teams
 
+**Drishti-AI** (the desktop app) is also an offline **CCTV investigation workstation for police**:
+one case holds the footage of many seized DVRs/NVRs/pen drives with their wrong clocks corrected
+(DVR times are never edited), every seized file is hashed (SHA-256, Merkle root) and given a
+lossless playback copy, and the officer gets one cross-camera timeline, *describe-it* search
+(SigLIP-2), clothing-colour and appearance search across cameras, face and number-plate sightings
+across DVRs, the suspect's journey and highlight reel, a Forensic Studio with reproducible filter
+logs, and a court bundle with **one Section 63 BSA 2023 certificate per device** and
+`checksums.sha256`. Start: double-click `run_app.bat` (source) or `CCTVAnalysis.exe`; the app opens
+on *Quick investigation*. Guide: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md) Part A; cases:
+[`docs/CASES.md`](docs/CASES.md); procurement documents: [`docs/gem/`](docs/gem/).
+
 Stop scrubbing through hours of recordings. Point it at the folder your DVR/NVR exports to and get
 **daily highlight videos in true time order, an Excel workbook + HTML dashboard that cites every
 movement** (when, which file, the offset in that file, snapshots, clip, who/what was seen, faces,
@@ -34,9 +45,11 @@ Documentation: [`docs/INDEX.md`](docs/INDEX.md).
 
 ## Quick start (desktop app)
 1. Windows: unzip `CCTVAnalysis` (built by CI or `packaging/build_windows.ps1`) and run `CCTVAnalysis.exe`.
-   From source: `pip install -r requirements.txt` then `python -m cctv_analysis.app`.
-2. Choose the recordings folder and a results folder, tick the analyses you need, *Check computer*,
-   *Scan recordings*, *Estimate time*, *Start analysis*. Step-by-step: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
+   From source: double-click **`run_app.bat`** (finds Python, offers to install the packages into
+   `.venv`, starts the app), or `pip install -r requirements.txt` then `python -m cctv_analysis.app`.
+2. Investigation: *Quick investigation* → drop the seized folders → clock corrections → *Run
+   investigation*. One recorder: *Folder analysis* → recordings and results folders → *Start
+   analysis*. Step-by-step: [`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
 
 ## Quick start (Google Colab)
 
@@ -125,7 +138,11 @@ All settings live in [`cctv_analysis/config.py`](cctv_analysis/config.py) (docum
 | `timeline.py`, `ocr.py` | recording-time resolution (file name, DVR clock via OCR, metadata, mtime) |
 | `plates.py` | number plates (detector, OCR, deblur, format fit, voting) |
 | `retime.py`, `evidence.py`, `audit.py`, `reviews.py` | fix old times, evidence packages, audit log, review decisions |
-| `sysinfo.py`, `licensing.py`, `app/` | system check & estimate, offline licences, desktop app |
+| `sysinfo.py`, `licensing.py`, `app/` | system check & estimate, offline licences, desktop app (`case_api.py`: case screens) |
+| `cases.py`, `ingest.py`, `investigation.py` | cases with several seized sources, acquisition hashes + lossless playback copies, case runs |
+| `journey.py`, `reid.py` | cross-camera timeline, sightings (face / plate / appearance), journey, highlight reel; appearance search |
+| `enhance.py`, `section63.py`, `merkle.py` | Forensic Studio filters; Section 63 BSA certificate + court bundle; RFC 6962 Merkle root |
+| `resources.py` | memory governor (smaller batches above 85 % RAM) |
 | `motion.py` | pass 1: motion, clock mask, lighting rejection, tamper, heatmap, event segmentation |
 | `detector.py` | YOLO26 detection + tracking, pose & posture cues |
 | `faces.py` | YuNet/SFace, quality, persistent identity clustering, known-face enrolment |

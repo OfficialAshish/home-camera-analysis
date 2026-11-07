@@ -37,6 +37,7 @@ import numpy as np
 
 from . import __version__
 from . import video_io as V
+from .storage import resolve
 
 if TYPE_CHECKING:
     from .plates import ClassicPlateDetector, YoloPlateDetector
@@ -143,6 +144,7 @@ def _report_html(case: dict, events: List[dict], files: dict) -> str:
 <tr><th>Time source</th><td>{E(e['time_source'] or '')}</td><th>Duration</th><td>{e['duration']:.0f} s</td></tr>
 <tr><th>Source file</th><td colspan=3>{E(e['rel_path'])} @ {V.fmt_offset(e['start_off'])}–{V.fmt_offset(e['end_off'])}<br>
 <small>SHA-256 {E(files.get(e['video_path'], ''))}</small></td></tr>
+<tr><th>Original segment</th><td colspan=3>{E(e.get('original_note', ''))}</td></tr>
 <tr><th>Number plates</th><td>{E(plates)}</td><th>People / identities</th><td>{e['n_person_tracks']} / {E(', '.join(e['identities'] or []))}</td></tr></table>
 {f'<p><b>AI description:</b> {E(vlm)}</p>' if vlm else ''}<ul>{flags or '<li>no flags</li>'}</ul>{snaps}</section>""")
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Incident report {E(case['case_id'] or '')}</title>
@@ -208,15 +210,21 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
             if os.path.exists(src) and src not in src_hash:
                 src_hash[src] = sha256_file(src)
             note = {}
-            if not redact and os.path.exists(src):
-                ext = os.path.splitext(src)[1] or ".mp4"
-                if _cut_original(src, e["start_off"], e["end_off"], os.path.join(d, "original_segment" + ext)):
+            if not redact:                       # a package without the original says so, and why
+                if not os.path.exists(src):
+                    note["original_segment"] = (f"NOT INCLUDED – the recording {e['rel_path']} was not found "
+                                                "(drive unplugged or moved?)")
+                elif _cut_original(src, e["start_off"], e["end_off"],
+                                   os.path.join(d, "original_segment" + (os.path.splitext(src)[1] or ".mp4"))):
                     note["original_segment"] = ("stream copy of the recording (not re-encoded); it may begin "
                                                 "a few seconds before the event start (keyframe boundary)")
+                else:
+                    note["original_segment"] = "NOT INCLUDED – the recording could not be cut (see the app log)"
             images = []
 
             def put(path, name, d=d):
-                if not path or not os.path.exists(path):
+                path = resolve(out_dir, path)                # follows a moved output folder
+                if not path:
                     return None
                 dst = os.path.join(d, name)
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -256,6 +264,7 @@ def export_evidence(out_dir: str, event_ids: Iterable[str], dest_zip: str, cfg=N
             with open(os.path.join(d, "event.json"), "w", encoding="utf-8") as fh:
                 json.dump(meta, fh, indent=1, default=str)
             report_events.append({**e, "plates": [p for p in meta["plates"] if p["text"]],
+                                  "original_note": note.get("original_segment", "not included (redacted package)"),
                                    "images": [f"events/{e['event_id']}/" + x.split(f"events/{e['event_id']}/", 1)[-1]
                                               for x in images]})
         with open(os.path.join(tmp, "incident_report.html"), "w", encoding="utf-8") as fh:

@@ -21,8 +21,10 @@ score threshold in **calibrated time order**, with both times, camera and crop.
    brightness histogram of grey pixels (black, grey and white clothing are represented);
    torso gradient-orientation texture (stripes, prints); soft-binned aspect ratio. Square root
    (Hellinger) and L2 normalisation: scores are in [0, 1].
-5. Named dominant colours of the upper and lower body (`red`, `blue`, `black`, `white`, `grey`,
-   `brown` …) for display and filtering.
+5. Named dominant colours of the upper and lower body, one of `reid.COLOR_NAMES` (black, grey,
+   white, red, orange, brown, yellow, green, cyan, blue, purple, pink), for display and for the
+   app's *Clothing colours* search (`GET /api/cases/<id>/people?upper=&lower=`) and the colour
+   filter of an appearance search.
 
 ## Optional learned model
 Any re-ID network exported to ONNX with a `1×3×256×128` RGB input (ImageNet normalisation) and one

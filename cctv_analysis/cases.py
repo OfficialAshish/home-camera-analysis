@@ -135,6 +135,11 @@ class Source:
             return float(self.camera_offsets[camera])
         return float(self.clock_offset)
 
+    def recording(self, rel_path: str) -> str:
+        """The seized recording `rel_path` (relative to the source folder) where the folder is now –
+        never the absolute path stored at analysis time, which a new drive letter makes stale."""
+        return os.path.join(self.path, *[x for x in re.split(r"[\\/]+", rel_path or "") if x])
+
 
 CASE_FIELDS = ("investigating_officer", "fir_number", "police_station", "under_sections", "district", "state",
                "incident_time", "notes")
@@ -285,6 +290,50 @@ class Case:
                           location=s.location if location is not None else None,
                           declarant=s.declarant if declarant is not None else None, by=user)
         return s
+
+    def relink_source(self, sid: str, path: str, user: str = "", full_hash: bool = True,
+                      progress=None) -> dict:
+        """Point a source at the new location of its seized folder (the pen drive is now F: instead
+        of E:, the folder was copied to the forensic workstation). Every recording of the
+        acquisition record must be there with the same size and – with `full_hash` – the same
+        SHA-256; otherwise nothing changes and the differences are reported."""
+        from .evidence import sha256_file
+        from .ingest import load_ingest
+        s = self.source(sid)
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isdir(path):
+            raise ValueError(f"folder not found: {path}")
+        root_r = os.path.realpath(self.root)
+        if os.path.commonpath([root_r, os.path.realpath(path)]) == root_r:
+            raise ValueError("a source folder must not be inside the case folder")
+        rec = load_ingest(self.source_dir(sid))
+        if not rec or not rec.get("files"):
+            raise ValueError("this source was never ingested: there is no acquisition record to compare the folder "
+                             "with – run the case first")
+        problems: List[str] = []
+        files = rec["files"]
+        for i, f in enumerate(files, 1):
+            p = os.path.join(path, *f["rel"].split("/"))
+            if progress:
+                progress({"stage": "verifying", "index": i, "total": len(files), "path": f["rel"],
+                          "percent": round(100 * (i - 1) / len(files), 1)})
+            if not os.path.isfile(p):
+                problems.append(f"{f['rel']}: missing")
+            elif os.path.getsize(p) != f["bytes"]:
+                problems.append(f"{f['rel']}: size differs")
+            elif full_hash and sha256_file(p) != f["sha256"]:
+                problems.append(f"{f['rel']}: SHA-256 differs from the acquisition hash")
+        if problems:
+            raise ValueError(f"this folder does not hold the acquired recordings of {s.label} "
+                             f"({len(problems)} problem(s)): " + "; ".join(problems[:5]))
+        old = s.path
+        s.path = path
+        with _LOCK:
+            self.save()
+        verified = "sha256" if full_hash else "size"
+        self.audit.append("source_relinked", case_id=self.case_id, source=sid, old_path=old, new_path=path,
+                          files=len(files), verified=verified, by=user)
+        return {"source_id": sid, "path": path, "files": len(files), "verified": verified}
 
     def remove_source(self, sid: str, user: str = "") -> None:
         s = self.source(sid)

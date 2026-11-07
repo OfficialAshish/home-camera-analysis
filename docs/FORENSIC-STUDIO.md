@@ -1,6 +1,19 @@
 # Forensic Studio (image enhancement with an audit log)
 
-Status: **current** · Code: `enhance.py` · Tests: `tests/test_forensic_enhancement.py`
+Status: **current** · Code: `enhance.py`, app screen *Forensic Studio* (`app/case_api.py` `…/enhance/*`,
+`static/case.js`) · Tests: `tests/test_forensic_enhancement.py`, `tests/test_case_api.py`, `tests/test_ui_cases_playwright.py`
+
+## In the app
+*Timeline & search › event › Open in Forensic Studio at this moment* decodes the original frame
+at that time from the recording (`…/frame`, lossless PNG at full resolution; raw `.264/.265`
+through their lossless remux). Filters are added and tuned with a live preview (requests are
+debounced and the newest result wins); Perspective takes its four corners from clicks on the
+original; *Frames to stack* takes 3–9 consecutive decoded frames around the time. *Save enhanced
+still* stores `<case>/enhancements/<name>_<time>.png`, its `_input.png` and a `.json` record (source,
+event, camera, video file and offset, DVR and calibrated time, chain, log, hashes, versions,
+operator), checks that re-running the chain reproduces the output hash, and writes
+`enhancement_saved` with both hashes into the case audit log. Saved stills can be put into the
+court bundle, under the certificate of the device their frame came from.
 
 ## Principle
 Enhancement may only make visible what the recording contains. Every filter is deterministic

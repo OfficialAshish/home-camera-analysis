@@ -42,6 +42,7 @@ def test_colours_of_clothing_are_named():
     for name, (top, legs, (u, lo)) in OUTFITS.items():
         a = reid.appearance(person(top, legs))
         assert (a["upper"], a["lower"]) == (u, lo), name
+        assert {a["upper"], a["lower"]} <= set(reid.COLOR_NAMES)        # the app's colour filter offers these
         assert 2.0 < a["aspect"] < 3.0
         assert abs(np.linalg.norm(a["vector"]) - 1) < 1e-5
 

@@ -13,6 +13,8 @@ Status: **current** · This is an engineering summary, not legal advice.
 | Hugging Face Transformers | Apache-2.0 | built-in VLM | fine; each model has its own licence (Qwen3-VL: Apache-2.0; SigLIP-2: Apache-2.0) |
 | ffmpeg | LGPL-2.1+ (LGPL build) / GPL (with x264) | decoding, cutting, encoding | the Windows build bundles an **LGPL** build (BtbN `win64-lgpl`), so no GPL x264 is shipped; the app then encodes with OpenH264 or MPEG-4 (decision D12). Ship ffmpeg's licence text and a source offer. |
 | Flask, waitress, cryptography, psutil, requests, xlsxwriter, matplotlib, numpy | BSD / MIT / ZPL / Apache / PSF | app, reports | fine |
+| ReportLab | BSD | Section 63 certificate PDF | fine (attribution) |
+| Person re-ID model (optional `<models>/reid/reid.onnx`) | depends on the weights | appearance search, blended with the built-in descriptor | **Not bundled.** Public OSNet/FastReID weights are trained on Market-1501 / MSMT17 / DukeMTMC, whose terms allow research use only (DukeMTMC was withdrawn by its authors). The built-in descriptor (`reid.py`, own code) needs no model. Use a learned model only with weights whose training data is licensed for the buyer's use. |
 
 The repository itself has **no LICENSE file**. Choose one deliberately, and consistently with the
 YOLO decision above.
@@ -22,6 +24,14 @@ Face grouping, watchlists and plate reading process personal data. In India the 
 applies, and elsewhere comparable laws do. Customers should display CCTV notices, limit
 retention, restrict access and use redacted exports when sharing. The product supports this
 (local processing only, redacted exports, audit log) but cannot enforce it.
+
+## Government procurement (GeM)
+Templates in `docs/gem/`: technical specifications (measured figures only), the Make in India
+local-content self-declaration (with the component bill of materials; the percentage is the
+seller's to compute and certify), supply/warranty/support terms, the end-user licence agreement
+and the police handover runbook. None of them is a certification; every `[[SELLER: …]]` blank
+must be filled and the set reviewed by the seller's legal cell. The trade name "Drishti-AI" has
+not been searched for existing trademarks.
 
 ## Distribution checklist (owner)
 1. Decide the YOLO route (above) and add a LICENSE file.
