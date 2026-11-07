@@ -9,7 +9,8 @@ the workstation. Every step names what you should see, so that a wrong result is
 2. **Packaged build:** copy the `CCTVAnalysis` folder to `C:\Program Files\Drishti-AI\` (or any
    folder) and create a desktop shortcut to `CCTVAnalysis.exe`.
    **Source install:** copy the repository folder and double-click `run_app.bat`; the first start
-   offers to install the packages into `.venv\` (needs internet once, about 2 GB).
+   offers to install the packages into `.venv\` (needs internet once, about 2 GB). Unattended:
+   `run_app.bat --install --self-test` in a Command Prompt.
 3. **Check:** in a Command Prompt in that folder run `CCTVAnalysis.exe --self-test` (or
    `run_app.bat --self-test`). Expected: a line ending with `'certificate_pdf': True,
    'forensic_filters': True, 'appearance_vector': True}` and exit code 0 (`echo %ERRORLEVEL%`

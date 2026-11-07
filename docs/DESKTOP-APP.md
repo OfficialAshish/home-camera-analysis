@@ -12,8 +12,10 @@ screens, `common.py` request helpers, `static/app.js` + `static/case.js`) · Tes
   packages (`.venv\` next to it, `python`, `py -3`), otherwise finds Python 3.10+ and offers to
   install everything into `.venv\` (CPU PyTorch + `requirements.txt`); puts `packaging\ffmpeg\`
   on PATH when present, warns when ffmpeg is missing, then starts the app (the browser opens on the
-  private link). `run_app.bat --self-test` runs the installation check and exits with its result –
-  the *windows-app* CI job runs it.
+  private link). `run_app.bat --self-test` runs the installation check and exits with its result;
+  `run_app.bat --install` installs into `.venv\` without asking (first start on a new computer).
+  The *windows-app* CI job runs both: `--self-test` against the runner's Python, then
+  `--install --self-test` (a fresh `.venv` with CPU PyTorch and `requirements.txt`).
 * Packaged: `CCTVAnalysis.exe` (built by `packaging/build_windows.ps1`, or the *windows-app* CI
   job artifact). A console window shows the private link; closing it stops the app.
 

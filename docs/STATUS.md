@@ -61,7 +61,7 @@ regenerated, self-test, mutation check, CI on GitHub).
 | 15 | Re-ID descriptor weak under background and lighting changes | background suppression, exposure normalisation, soft binning (hand-v2) | `docs/REID.md`: rank-1 17/17 (0.2 s apart) and 17/23 = 74 % (2 s apart) on real pedestrians |
 | 16 | Notebook would break when an embedded module imports a non-embedded one | build fails with the module named | positive control in the previous commit; notebook regenerated with every change |
 | 17 | Duplicate helpers (`results.rel` / `journey._rel`); level names undefined (I first used `INFO`) | `storage.rel_to`; `rules.LEVELS` | grep: one definition each; level test |
-| 18 | `run_app.bat` assumed `python` on PATH with packages, no ffmpeg, no check | rewritten: first Python with the packages (`.venv`, `python`, `py -3`), offer to install, bundled ffmpeg on PATH, `--self-test`; CRLF enforced by `.gitattributes` | CI windows job step `run_app.bat --self-test` |
+| 18 | `run_app.bat` assumed `python` on PATH with packages, no ffmpeg, no check | rewritten: first Python with the packages (`.venv`, `python`, `py -3`), offer to install (or `--install`), bundled ffmpeg on PATH, `--self-test`; CRLF enforced by `.gitattributes` | CI windows job: `run_app.bat --self-test` and `run_app.bat --install --self-test` |
 | 19 | Three mutation-check entries no longer matched the code after refactors (would have been SETUP-ERROR) | updated; new mutations for the new guards | `tools/mutation_check.py`: every original found exactly once (checked), results in section 5 |
 | 20 | Describe-it search could not be turned on after a case was analysed: finished videos are skipped, so the index stayed empty and the advice "run again" did nothing | `semantic.backfill_index` embeds the saved keyframes of finished events during the next run | `test_describe_it_search_can_be_turned_on_later_without_analysing_again`: 0 videos re-analysed, ≥ 3 keyframes added, search answers; mutation fails it |
 | 21 | A stack-only still was reported "reproducible" without any check (nothing to re-run) | every save decodes the frame(s) from the recording again, re-runs stack and filters and compares the hash; stored as `reproduced_from_recording` and audited | `test_a_saved_still_is_reproduced_from_the_recording_or_flagged` (a simulated drifting decode is reported, a 3-frame stack reproduces); mutation fails it |
@@ -87,8 +87,9 @@ Limitations (not rounded up):
 * **Drag & drop** of real OS folders is not automated: the UI test drops simulated
   FileSystemEntry objects (the server-side location by content is real). Location searches the
   parents of recent folders, the home folders and drive roots to depth 4 within 6 s.
-* **`run_app.bat`**: CI runs only `--self-test` on Windows; the interactive install branch (venv +
-  pip) is not executed by CI. The system folder dialog on Windows is not exercised (CI is headless).
+* **`run_app.bat`**: CI runs `--self-test` and `--install --self-test` on Windows (detected Python,
+  then a fresh `.venv` install); the interactive Y/N prompt itself is not automated. The system
+  folder dialog on Windows is not exercised (CI is headless).
 * UI in English only; the map is a plot of the cameras' positions, not a road map; GPU speeds not
   measured; playback copies double the disk use of non-MP4 sources; *Remove source* (browser
   confirm dialog) is not covered by the UI test.

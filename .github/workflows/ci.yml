@@ -75,6 +75,9 @@ jobs:
       - name: One-click launcher (run_app.bat) finds Python and passes the self-test from the source checkout
         shell: cmd
         run: run_app.bat --self-test
+      - name: One-click launcher, first start on a new computer (creates .venv, installs, self-test)
+        shell: cmd
+        run: run_app.bat --install --self-test
       - uses: actions/upload-artifact@v4
         with:
           name: CCTVAnalysis-windows
