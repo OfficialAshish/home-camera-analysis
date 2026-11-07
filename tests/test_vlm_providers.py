@@ -121,8 +121,11 @@ def test_pipeline_uses_local_server_for_descriptions_and_plates(fake, tmp_path):
     vlm = [json.loads(r[0]) for r in db.execute("SELECT vlm FROM events WHERE vlm IS NOT NULL")]
     n_events = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     assert len(vlm) == n_events >= 3 and all(v["description"] == "A person walks past the counter." for v in vlm)
-    plate = db.execute("SELECT text, method FROM plates ORDER BY confidence DESC").fetchone()
-    assert plate and plate[0] == "MH12AB1234" and "vlm" in plate[1]
+    plate = db.execute("SELECT text, ocr_text, confidence, method FROM plates ORDER BY confidence DESC").fetchone()
+    assert plate and plate[1] == "MH12AB1234" and "vlm" in plate[3]          # the AI read what OCR could not
+    # it joins the vote like any reader: reported only when the fused read reaches the limit,
+    # otherwise it is the machine's guess for the examiner (measured here: 0.595 < 0.6)
+    assert plate[0] == ("MH12AB1234" if plate[2] >= cfg.plate_min_confidence else "")
     kinds = ["plate" if "number plate" in r["json"]["messages"][0]["content"][0]["text"] else "event"
              for r in fake.requests]
     assert kinds.count("event") == n_events and kinds.count("plate") >= 1

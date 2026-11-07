@@ -25,7 +25,8 @@ FIELDS = [
     ("plate_enhance", "Enhance hard plates (fast vehicles)", "Number plates", "bool",
      "Motion-deblurs and fuses several frames of hard plates; saves the enhanced image. Much slower.", "high"),
     ("plate_vlm_read", "Ask the AI model when a plate is unreadable", "Number plates", "bool",
-     "Uses the AI description model (below) as a last resort.", "high"),
+     "Uses the AI model (Settings › AI model providers) as a last resort; its read counts only when confident, "
+     "otherwise it is shown as the machine's guess for you to check.", "high"),
     ("plate_min_confidence", "Confidence needed to report a plate", "Number plates", "range:0.3:0.95:0.05",
      "Below this the plate is shown as \u201cnot read\u201d with the machine's guess, for you to check and type.", "none"),
     ("plate_watchlist", "Plate watchlist (comma separated)", "Number plates", "list",

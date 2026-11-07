@@ -7,7 +7,7 @@ Status: **current** · Code: `cctv_analysis/plates.py` · Tests: `tests/test_pla
 |---|---|---|---|
 | `use_plates` | Read vehicle number plates | off | read plates of cars, motorcycles, buses, trucks |
 | `plate_enhance` | Enhance hard plates (fast vehicles) | off | motion deblur + multi-frame fusion, saves the enhanced image |
-| `plate_vlm_read` | Ask the AI model when a plate is unreadable | off | VLM reads the (enhanced) crop when OCR confidence < 0.6 |
+| `plate_vlm_read` | Ask the AI model when a plate is unreadable | off | VLM reads the (enhanced) crop when OCR confidence < 0.6; its read joins the vote at confidence 0.7, so beside failed OCR reads it usually stays below `plate_min_confidence` and becomes the machine's guess for the examiner (a VLM can be wrong with a plausible plate) |
 | `plate_watchlist` | Plate watchlist | – | alert `watchlist_plate` (+50) on a match within `plate_watchlist_max_edits` (1) |
 | `plate_region` | – | `IN` | Indian formats (state + RTO + series + 4 digits, BH series); `any` disables format rules |
 | `plate_reads_per_track` | – | 6 | best observations re-read per vehicle track |
