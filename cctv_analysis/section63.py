@@ -23,10 +23,13 @@ source file and a Merkle root over all of them. What it never fills in: the sign
 names/addresses/places of the declarants unless the officer typed them – a declaration is made by
 a person, not by software.
 
-``build_bundle`` writes one ZIP: ``originals/`` (stream-copy cuts of the source recordings, not
-re-encoded), ``enhanced/`` (Forensic Studio outputs with their filter logs), ``events/``
-(event.json per sighting/event), ``audit/`` (case and source audit logs), the certificate as PDF
-and HTML, ``hash_report.csv`` and ``checksums.sha256`` (``sha256sum -c`` format, every file).
+``build_bundle`` writes one ZIP: ``certificates/<source>/`` (**one certificate per source
+device** – Part A is signed by the person in charge of that device, who can vouch for nothing
+else – as PDF, HTML and certificate.json, each hash report listing only that device's records),
+``originals/`` (stream-copy cuts of the source recordings, not re-encoded), ``enhanced/``
+(Forensic Studio outputs with their filter logs), ``events/`` (event.json per sighting/event),
+``audit/`` (case and source audit logs, acquisition records), ``hash_report.csv``, ``README.txt``
+and ``checksums.sha256`` (``sha256sum -c`` format, every file).
 """
 from __future__ import annotations
 
@@ -344,25 +347,50 @@ def _span(start: Optional[str], seconds: float) -> str:
     return f"{t:%Y-%m-%d %H:%M:%S} to {t + dt.timedelta(seconds=max(0.0, seconds)):%H:%M:%S}"
 
 
-def build_bundle(case: Case, items: List[dict], dest_zip: str, part_a: Optional[dict] = None,
+README = """Evidence bundle – case {case_id} (FIR {fir})
+Generated {generated} by {tool}
+
+certificates/<source>/   one certificate under Section 63 BSA 2023 per source device
+                         (Section63_Certificate.pdf / .html, certificate.json). Part A is
+                         signed by the person in charge of THAT device, Part B by the expert.
+                         Each certificate's hash report lists only the records of its device.
+originals/<source>/      the event segments cut from the seized recordings by stream copy
+                         (not re-encoded; a cut may begin a few seconds before the event)
+enhanced/                Forensic Studio stills: input, output and the filter log (.json)
+events/<source>/         times (DVR clock and calibrated), camera, source file and offsets
+audit/                   case and source audit logs, acquisition hashes (ingest.json)
+hash_report.csv          every record with camera, both time spans and SHA-256
+checksums.sha256         SHA-256 of every file in this bundle
+
+To verify: extract the ZIP, then in the extracted folder run
+    sha256sum -c checksums.sha256          (Linux / macOS / Git Bash)
+    Get-FileHash -Algorithm SHA256 <file>  (Windows PowerShell, compare with the list)
+Every line must report OK. The SHA-256 of this ZIP is recorded in the case audit log.
+"""
+
+
+def build_bundle(case: Case, items: List[dict], dest_zip: str, part_a: Optional[Dict[str, dict]] = None,
                  part_b: Optional[dict] = None, enhancements: Sequence[str] = (), operator: str = "",
                  notes: str = "", progress=None) -> dict:
-    """Evidence ZIP with the Section 63 certificate.
+    """Evidence ZIP with one Section 63 certificate per source device.
 
     `items`: [{"source_id", "event_id"}] – the events/sightings to produce. `enhancements`: names
-    of saved Forensic Studio outputs (``<case>/enhancements/<name>.png``)."""
+    of saved Forensic Studio outputs (``<case>/enhancements/<name>.png``); each belongs to the
+    source its frame came from. `part_a`: {source_id: declarant} (default: the declarant saved on
+    the source); `part_b`: the expert (default: the case's saved expert)."""
     import sqlite3
-    if not items:
-        raise ValueError("choose at least one event or sighting")
+    if not items and not enhancements:
+        raise ValueError("choose at least one event, sighting or enhanced still")
     tmp = tempfile.mkdtemp(prefix="bundle_")
     exhibits: List[dict] = []
     sources_used: List[str] = []
+    total = len(items) + len(enhancements)
     try:
         for n, it in enumerate(items, 1):
             sid, eid = it.get("source_id"), it.get("event_id")
             src = case.source(sid)
             if progress:
-                progress(n, len(items) + len(enhancements), eid)
+                progress(n, total, eid)
             out = case.source_dir(sid)
             db = sqlite3.connect(f"file:{os.path.join(out, 'analysis.db')}?mode=ro", uri=True)
             db.row_factory = sqlite3.Row
@@ -397,26 +425,33 @@ def build_bundle(case: Case, items: List[dict], dest_zip: str, part_a: Optional[
             os.makedirs(os.path.dirname(ej), exist_ok=True)
             with open(ej, "w", encoding="utf-8") as fh:
                 json.dump(meta, fh, indent=1)
-            exhibits.append({"file": f"originals/{sid}/{name}", "camera": f"{src.label}/{e['camera']}",
+            exhibits.append({"file": f"originals/{sid}/{name}", "source_id": sid, "camera": f"{src.label}/{e['camera']}",
                              "span_calibrated": _span(meta["calibrated_start"], dur), "span_dvr": _span(e["start_dt"], dur),
                              "kind": "original segment"})
         edir = os.path.join(case.root, "enhancements")
         for k, nm in enumerate(enhancements, len(items) + 1):
             if progress:
-                progress(k, len(items) + len(enhancements), nm)
+                progress(k, total, nm)
             base = os.path.basename(nm)
             if base.endswith(".png"):
                 base = base[:-4]
             for suffix in (".png", ".json", "_input.png"):
-                p = os.path.join(edir, base + suffix)
-                if not os.path.exists(p):
+                if not os.path.exists(os.path.join(edir, base + suffix)):
                     raise FileNotFoundError(f"enhancement {base} not found")
-                os.makedirs(os.path.join(tmp, "enhanced"), exist_ok=True)
-                shutil.copyfile(p, os.path.join(tmp, "enhanced", base + suffix))
             with open(os.path.join(edir, base + ".json"), encoding="utf-8") as fh:
                 rec = json.load(fh)
             src_info = rec.get("source", {})
-            exhibits.append({"file": f"enhanced/{base}.png", "camera": src_info.get("camera", ""),
+            sid = src_info.get("source_id", "")
+            try:
+                case.source(sid)
+            except KeyError:
+                raise ValueError(f"enhancement {base} does not name a source of this case – it cannot be certified")
+            if sid not in sources_used:
+                sources_used.append(sid)
+            os.makedirs(os.path.join(tmp, "enhanced"), exist_ok=True)
+            for suffix in (".png", ".json", "_input.png"):
+                shutil.copyfile(os.path.join(edir, base + suffix), os.path.join(tmp, "enhanced", base + suffix))
+            exhibits.append({"file": f"enhanced/{base}.png", "source_id": sid, "camera": src_info.get("camera", ""),
                              "span_calibrated": src_info.get("calibrated_time", ""), "span_dvr": src_info.get("dvr_time", ""),
                              "kind": "enhanced still: " + rec.get("log", "")})
         os.makedirs(os.path.join(tmp, "audit"), exist_ok=True)
@@ -431,25 +466,40 @@ def build_bundle(case: Case, items: List[dict], dest_zip: str, part_a: Optional[
                 shutil.copyfile(ing, os.path.join(tmp, "audit", f"{sid}_ingest.json"))
         for e in exhibits:
             e["sha256"] = sha256_file(os.path.join(tmp, e["file"]))
+        records = list(exhibits)
         for root_, _, fs in os.walk(os.path.join(tmp, "audit")):
             for f in sorted(fs):
                 rel = os.path.relpath(os.path.join(root_, f), tmp).replace(os.sep, "/")
-                exhibits.append({"file": rel, "camera": "", "span_calibrated": "", "span_dvr": "", "kind": "audit record",
-                                 "sha256": sha256_file(os.path.join(root_, f))})
-        cert = certificate_data(case, exhibits, part_a, part_b, sources_used)
-        cert["operator"], cert["notes"] = operator, notes
-        with open(os.path.join(tmp, "certificate.json"), "w", encoding="utf-8") as fh:
-            json.dump(cert, fh, indent=1)
-        with open(os.path.join(tmp, "Section63_Certificate.html"), "w", encoding="utf-8") as fh:
-            fh.write(certificate_html(cert))
-        certificate_pdf(cert, os.path.join(tmp, "Section63_Certificate.pdf"))
+                records.append({"file": rel, "source_id": "", "camera": "", "span_calibrated": "", "span_dvr": "",
+                                "kind": "audit record", "sha256": sha256_file(os.path.join(root_, f))})
+        certificates: Dict[str, str] = {}
+        expert = part_b if part_b is not None else case.expert
+        for sid in sources_used:
+            src = case.source(sid)
+            mine = [e for e in exhibits if e["source_id"] == sid]
+            decl = (part_a or {}).get(sid, src.declarant)
+            cert = certificate_data(case, mine, decl, expert, [sid])
+            cert["operator"], cert["notes"] = operator, notes
+            cdir = os.path.join(tmp, "certificates", sid)
+            os.makedirs(cdir, exist_ok=True)
+            with open(os.path.join(cdir, "certificate.json"), "w", encoding="utf-8") as fh:
+                json.dump(cert, fh, indent=1)
+            with open(os.path.join(cdir, "Section63_Certificate.html"), "w", encoding="utf-8") as fh:
+                fh.write(certificate_html(cert))
+            certificate_pdf(cert, os.path.join(cdir, "Section63_Certificate.pdf"))
+            certificates[sid] = cert["exhibits_merkle_root"]
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["file", "kind", "camera", "span_calibrated", "span_dvr", "sha256"])
-        for e in exhibits:
-            w.writerow([e["file"], e["kind"], e["camera"], e["span_calibrated"], e["span_dvr"], e["sha256"]])
+        w.writerow(["file", "kind", "certificate", "camera", "span_calibrated", "span_dvr", "sha256"])
+        for e in records:
+            w.writerow([e["file"], e["kind"], e["source_id"], e["camera"], e["span_calibrated"], e["span_dvr"],
+                        e["sha256"]])
         with open(os.path.join(tmp, "hash_report.csv"), "w", encoding="utf-8", newline="") as fh:
             fh.write(buf.getvalue())
+        with open(os.path.join(tmp, "README.txt"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(README.format(case_id=case.case_id, fir=case.fir_number or "–",
+                                   generated=dt.datetime.now(IST).isoformat(timespec="seconds"),
+                                   tool=f"Drishti-AI (home-camera-analysis {__version__})"))
         sums: Dict[str, str] = {}
         for root_, _, fs in os.walk(tmp):
             for f in fs:
@@ -468,29 +518,36 @@ def build_bundle(case: Case, items: List[dict], dest_zip: str, part_a: Optional[
         shutil.rmtree(tmp, ignore_errors=True)
     zsha = sha256_file(dest_zip)
     case.audit.append("bundle_exported", case_id=case.case_id, zip=os.path.basename(dest_zip), zip_sha256=zsha,
-                      exhibits=len(exhibits), merkle_root=cert["exhibits_merkle_root"], operator=operator,
+                      exhibits=len(exhibits), certificates=certificates, operator=operator,
                       items=[f"{i['source_id']}/{i['event_id']}" for i in items], enhancements=list(enhancements))
     return {"zip": dest_zip, "zip_sha256": zsha, "exhibits": len(exhibits), "files": len(sums) + 1,
-            "merkle_root": cert["exhibits_merkle_root"]}
+            "certificates": certificates}
 
 
 def verify_bundle(zip_path: str) -> dict:
-    """Re-hash every file of a bundle against checksums.sha256 (what `sha256sum -c` does)."""
+    """Re-hash every file of a bundle against checksums.sha256 (what `sha256sum -c` does) and
+    check every certificate's hash report and Merkle root against the files."""
     import hashlib
+    import re
     with zipfile.ZipFile(zip_path) as z:
         lines = z.read("checksums.sha256").decode().splitlines()
         listed = {}
         for ln in lines:
             h, name = ln.split("  ", 1)
             listed[name] = h
-        bad = [n for n, h in listed.items() if hashlib.sha256(z.read(n)).hexdigest() != h]
+        bad = [n for n, h in listed.items() if n in z.namelist() and hashlib.sha256(z.read(n)).hexdigest() != h]
+        missing = [n for n in listed if n not in z.namelist()]
         extra = [n for n in z.namelist() if n not in listed and n != "checksums.sha256"]
-        cert = json.loads(z.read("certificate.json"))
-    items = merkle.file_lines({e["file"]: e["sha256"] for e in cert["exhibits"]})
-    root_ok = merkle.root(items) == cert["exhibits_merkle_root"]
-    exhibit_ok = all(listed.get(e["file"]) == e["sha256"] for e in cert["exhibits"])
-    return {"ok": not bad and not extra and root_ok and exhibit_ok, "modified": bad, "unlisted": extra,
-            "merkle_ok": root_ok, "exhibits_match_checksums": exhibit_ok, "files": len(listed)}
+        certs = {n.split("/")[1]: json.loads(z.read(n)) for n in z.namelist()
+                 if re.fullmatch(r"certificates/[^/]+/certificate\.json", n)}
+    per = {}
+    for sid, cert in certs.items():
+        items = merkle.file_lines({e["file"]: e["sha256"] for e in cert["exhibits"]})
+        per[sid] = {"merkle_ok": merkle.root(items) == cert["exhibits_merkle_root"],
+                    "exhibits_match_checksums": all(listed.get(e["file"]) == e["sha256"] for e in cert["exhibits"])}
+    ok = bool(certs) and not bad and not missing and not extra and \
+        all(v["merkle_ok"] and v["exhibits_match_checksums"] for v in per.values())
+    return {"ok": ok, "modified": bad, "missing": missing, "unlisted": extra, "certificates": per, "files": len(listed)}
 
 
 __all__ = ["DEVICE_KINDS", "build_bundle", "certificate_data", "certificate_html", "certificate_pdf", "verify_bundle"]

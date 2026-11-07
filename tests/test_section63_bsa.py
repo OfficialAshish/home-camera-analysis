@@ -17,6 +17,7 @@ sys.path.insert(0, ROOT)
 from cctv_analysis import enhance as EN  # noqa: E402
 from cctv_analysis import merkle  # noqa: E402
 from cctv_analysis import section63 as S63  # noqa: E402
+from cctv_analysis.audit import AuditLog  # noqa: E402
 from cctv_analysis.cases import CaseStore  # noqa: E402
 from cctv_analysis.ingest import ingest_source  # noqa: E402
 from cctv_analysis.storage import Store  # noqa: E402
@@ -79,17 +80,20 @@ def case_with_event(tmp_path):
     st.close()
     img = cv2.imread(os.path.join(ROOT, "tests", "assets", "car_rear.png"))
     out_img, rec = EN.apply_chain(img, [{"op": "CLAHE", "clip_limit": 3.0}, {"op": "UnsharpMask", "sigma": 1.5}])
-    saved = EN.save_enhancement(os.path.join(c.root, "enhancements"), "plate", {"camera": "Shop A DVR/ch01",
-                                "calibrated_time": "2026-10-31 21:03:05", "dvr_time": "2026-10-31 21:14:05"},
-                                img, out_img, rec)
+    saved = EN.save_enhancement(os.path.join(c.root, "enhancements"), "plate", {
+        "source_id": "shop-a-dvr", "camera": "Shop A DVR/ch01", "calibrated_time": "2026-10-31 21:03:05",
+        "dvr_time": "2026-10-31 21:14:05"}, img, out_img, rec)
     return c, saved, video
+
+
+CERT = "certificates/shop-a-dvr/"
 
 
 def _bundle(c, saved, tmp_path, **kw):
     dest = str(tmp_path / "bundle.zip")
     res = S63.build_bundle(c, [{"source_id": "shop-a-dvr", "event_id": "ch01-20261031-211405-0001001"}], dest,
-                           part_a={"name": "Ramesh Kumar", "relation_name": "Suresh Kumar",
-                                   "address": "12 MI Road, Jaipur", "place": "Jaipur"},
+                           part_a={"shop-a-dvr": {"name": "Ramesh Kumar", "relation_name": "Suresh Kumar",
+                                                  "address": "12 MI Road, Jaipur", "place": "Jaipur"}},
                            part_b={"name": "Dr A. Verma", "designation": "Scientific Officer, FSL Jaipur"},
                            enhancements=[saved["name"]], operator="SI Sharma", **kw)
     return dest, res
@@ -100,14 +104,14 @@ def test_certificate_follows_the_schedule_and_lists_real_hashes(case_with_event,
     dest, res = _bundle(c, saved, tmp_path)
     with zipfile.ZipFile(dest) as z:
         names = set(z.namelist())
-        cert = json.loads(z.read("certificate.json"))
-        page = " ".join(z.read("Section63_Certificate.html").decode().split())   # as rendered: whitespace collapses
+        cert = json.loads(z.read(CERT + "certificate.json"))
+        page = " ".join(z.read(CERT + "Section63_Certificate.html").decode().split())   # as rendered: whitespace collapses
         for e in cert["exhibits"]:                    # every listed hash is the real hash of the file in the bundle
             assert hashlib.sha256(z.read(e["file"])).hexdigest() == e["sha256"]
         original = z.read("originals/shop-a-dvr/ch01-20261031-211405-0001001.mp4")
-    assert {"Section63_Certificate.pdf", "Section63_Certificate.html", "checksums.sha256", "hash_report.csv",
-            "certificate.json", "audit/case_audit_log.jsonl", "audit/shop-a-dvr_ingest.json",
-            f"enhanced/{saved['name']}"} <= names
+    assert {CERT + "Section63_Certificate.pdf", CERT + "Section63_Certificate.html", "checksums.sha256",
+            "hash_report.csv", "README.txt", CERT + "certificate.json", "audit/case_audit_log.jsonl",
+            "audit/shop-a-dvr_ingest.json", f"enhanced/{saved['name']}"} <= names
     assert original[4:8] == b"ftyp"                   # a playable MP4 cut by stream copy
     # statutory wording, both parts, in order
     for phrase in ["THE SCHEDULE", "[See section 63(4)(c)]", "PART A", "(To be filled by the Party)",
@@ -134,7 +138,9 @@ def test_certificate_follows_the_schedule_and_lists_real_hashes(case_with_event,
     # the seized recording's acquisition hash
     assert cert["seized_files"][0]["sha256"] == hashlib.sha256(open(video, "rb").read()).hexdigest()
     assert cert["exhibits_merkle_root"] == merkle.root(merkle.file_lines({e["file"]: e["sha256"] for e in cert["exhibits"]}))
-    assert res["merkle_root"] == cert["exhibits_merkle_root"]
+    assert res["certificates"] == {"shop-a-dvr": cert["exhibits_merkle_root"]}
+    assert len(cert["exhibits"]) == 2 and all(e["kind"] == "original segment" or e["kind"].startswith("enhanced still")
+                                              for e in cert["exhibits"])      # tool records are not device records
 
 
 def test_pdf_is_valid_and_carries_both_parts_and_hashes(case_with_event, tmp_path):
@@ -142,8 +148,8 @@ def test_pdf_is_valid_and_carries_both_parts_and_hashes(case_with_event, tmp_pat
     c, saved, _ = case_with_event
     dest, _ = _bundle(c, saved, tmp_path)
     with zipfile.ZipFile(dest) as z:
-        pdf = z.read("Section63_Certificate.pdf")
-        cert = json.loads(z.read("certificate.json"))
+        pdf = z.read(CERT + "Section63_Certificate.pdf")
+        cert = json.loads(z.read(CERT + "certificate.json"))
     assert pdf.startswith(b"%PDF-") and pdf.rstrip().endswith(b"%%EOF")
     p = tmp_path / "c.pdf"
     p.write_bytes(pdf)
@@ -191,7 +197,7 @@ def test_checksums_verify_with_sha256sum_and_tampering_is_detected(case_with_eve
     with zipfile.ZipFile(dest) as zin, zipfile.ZipFile(forged, "w") as zout:
         for n in zin.namelist():
             data = zin.read(n)
-            if n == "certificate.json":
+            if n == CERT + "certificate.json":
                 d = json.loads(data)
                 d["exhibits_merkle_root"] = "0" * 64
                 data = json.dumps(d).encode()
@@ -225,3 +231,76 @@ def test_a_missing_source_recording_stops_the_bundle(case_with_event, tmp_path):
     with pytest.raises(FileNotFoundError, match="drive plugged in"):
         _bundle(c, saved, tmp_path)
     assert not os.path.exists(tmp_path / "bundle.zip")
+
+
+def test_each_device_gets_its_own_certificate_with_its_own_declarant(case_with_event, tmp_path):
+    """Part A is signed by the person in charge of one device: a bundle with two DVRs carries two
+    certificates, each listing only that device and that device's records."""
+    c, saved, _ = case_with_event
+    other = tmp_path / "seized" / "Jeweler_NVR"
+    other.mkdir(parents=True)
+    _video(str(other / "cam3_20261031212300.mp4"))
+    src2 = c.add_source(str(other), "Jeweler NVR", "0", device={"kind": "NVR", "make": "Dahua", "serial": "NVR-9"})
+    out2 = c.source_dir(src2.source_id)
+    ingest_source(str(other), out2)
+    st = Store(os.path.join(out2, "analysis.db"))
+    st.insert("events", {"event_id": "cam3-20261031-212302-0002001", "video_id": 1,
+                         "video_path": str(other / "cam3_20261031212300.mp4"), "rel_path": "cam3_20261031212300.mp4",
+                         "camera": "cam3", "start_off": 2.0, "end_off": 5.0, "start_dt": "2026-10-31 21:23:02",
+                         "end_dt": "2026-10-31 21:23:05", "duration": 3.0, "kind": "person", "level": "REVIEW",
+                         "score": 40, "time_source": "filename", "snapshots": "[]", "flags": "[]"})
+    st.close()
+    c.update_source("shop-a-dvr", declarant={"name": "Ramesh Kumar", "place": "Jaipur"})
+    c.update_source(src2.source_id, declarant={"name": "Anil Soni", "relation_name": "B. Soni"})
+    c.set_expert({"name": "Dr A. Verma", "designation": "Scientific Officer, FSL Jaipur"})
+    dest = str(tmp_path / "two.zip")
+    res = S63.build_bundle(c, [{"source_id": "shop-a-dvr", "event_id": "ch01-20261031-211405-0001001"},
+                               {"source_id": src2.source_id, "event_id": "cam3-20261031-212302-0002001"}], dest,
+                           enhancements=[saved["name"]])
+    assert set(res["certificates"]) == {"shop-a-dvr", "jeweler-nvr"}
+    with zipfile.ZipFile(dest) as z:
+        a = json.loads(z.read("certificates/shop-a-dvr/certificate.json"))
+        b = json.loads(z.read("certificates/jeweler-nvr/certificate.json"))
+        page_b = " ".join(z.read("certificates/jeweler-nvr/Section63_Certificate.html").decode().split())
+        csv_rows = z.read("hash_report.csv").decode().splitlines()
+    assert [d["source_id"] for d in a["devices"]] == ["shop-a-dvr"] and [d["source_id"] for d in b["devices"]] == \
+        ["jeweler-nvr"]
+    assert {e["file"] for e in a["exhibits"]} == {"originals/shop-a-dvr/ch01-20261031-211405-0001001.mp4",
+                                                  f"enhanced/{saved['name']}"}
+    assert {e["file"] for e in b["exhibits"]} == {"originals/jeweler-nvr/cam3-20261031-212302-0002001.mp4"}
+    assert a["part_a"]["name"] == "Ramesh Kumar" and b["part_a"]["name"] == "Anil Soni"
+    assert a["part_b"]["name"] == b["part_b"]["name"] == "Dr A. Verma"
+    assert "Anil Soni" in page_b and "Ramesh Kumar" not in page_b and "Hikvision" not in page_b
+    assert [x["source_id"] for x in b["seized_files"]] == ["jeweler-nvr"]          # only its own acquisition hashes
+    assert csv_rows[0].split(",")[:3] == ["file", "kind", "certificate"] and len(csv_rows) > 4
+    v = S63.verify_bundle(dest)
+    assert v["ok"] and set(v["certificates"]) == {"shop-a-dvr", "jeweler-nvr"}
+    # the declarant edits are in the case audit log
+    acts = [e["action"] for e in AuditLog(os.path.join(c.root, "audit_log.jsonl")).entries(100)]
+    assert "expert_updated" in acts and acts.count("source_updated") >= 2
+
+
+def test_uncertifiable_inputs_are_refused(case_with_event, tmp_path):
+    c, saved, _ = case_with_event
+    img = cv2.imread(os.path.join(ROOT, "tests", "assets", "car_rear.png"))
+    out_img, rec = EN.apply_chain(img, [{"op": "CLAHE"}])
+    orphan = EN.save_enhancement(os.path.join(c.root, "enhancements"), "orphan", {"camera": "?"}, img, out_img, rec)
+    with pytest.raises(ValueError, match="does not name a source"):
+        S63.build_bundle(c, [], str(tmp_path / "o.zip"), enhancements=[orphan["name"]])
+    with pytest.raises(ValueError, match="at least one"):
+        S63.build_bundle(c, [], str(tmp_path / "o.zip"))
+    with pytest.raises(ValueError, match="unknown declarant field"):
+        c.update_source("shop-a-dvr", declarant={"name": "x", "phone": "1"})
+    assert not os.path.exists(tmp_path / "o.zip")
+
+
+def test_a_file_removed_from_the_bundle_is_reported(case_with_event, tmp_path):
+    c, saved, _ = case_with_event
+    dest, _ = _bundle(c, saved, tmp_path)
+    cut = tmp_path / "cut.zip"
+    with zipfile.ZipFile(dest) as zin, zipfile.ZipFile(cut, "w") as zout:
+        for n in zin.namelist():
+            if not n.startswith("enhanced/") or not n.endswith("_input.png"):
+                zout.writestr(n, zin.read(n))
+    v = S63.verify_bundle(str(cut))
+    assert not v["ok"] and len(v["missing"]) == 1 and v["missing"][0].endswith("_input.png")

@@ -10,7 +10,10 @@ station, BNS sections, district, state, incident time and notes. It holds any nu
 source has a label, its folder (read only, never written), a **clock correction**, optional
 per-camera corrections, the device particulars for the Section 63 certificate (kind, make, model,
 serial, colour, IMEI/UIN/UID/MAC/cloud ID, storage medium, operating system, custodian,
-Owned/Maintained/Managed/Operated) and an optional map position (`lat`/`lon` or plan `x`/`y`).
+Owned/Maintained/Managed/Operated), the **Part A declarant** of that device's certificate (name,
+relation, address, place – only what the officer types) and an optional map position (`lat`/`lon`
+or plan `x`/`y`). The case holds the **Part B declarant** (the expert: name, relation, address,
+designation, place). Every edit is audited with the old and new values.
 
 ```
 <cases root>/<case_id>/

@@ -127,6 +127,7 @@ class Source:
     camera_offsets: Dict[str, float] = field(default_factory=dict)   # per-camera override (seconds)
     device: Device = field(default_factory=Device)
     location: Dict[str, float] = field(default_factory=dict)          # optional {"lat":…, "lon":…} or {"x":…, "y":…}
+    declarant: Dict[str, str] = field(default_factory=dict)           # Part A of this device's certificate
     added_at: str = ""
 
     def offset_for(self, camera: Optional[str]) -> float:
@@ -151,6 +152,7 @@ class Case:
     incident_time: str = ""           # 'YYYY-MM-DD HH:MM' (local)
     notes: str = ""
     created_at: str = ""
+    expert: Dict[str, str] = field(default_factory=dict)              # Part B of every certificate
     sources: List[Source] = field(default_factory=list)
     root: str = field(default="", repr=False)
 
@@ -242,9 +244,19 @@ class Case:
                           clock_offset=format_offset(src.clock_offset), by=user)
         return src
 
+    def set_expert(self, values: dict, user: str = "") -> None:
+        """Part B (the expert) of the case's Section 63 certificates."""
+        d = parse_declarant(values)
+        if d == self.expert:
+            return
+        self.expert = d
+        with _LOCK:
+            self.save()
+        self.audit.append("expert_updated", case_id=self.case_id, expert=d, by=user)
+
     def update_source(self, sid: str, user: str = "", label: Optional[str] = None, clock_offset=None,
                       camera_offsets: Optional[dict] = None, device: Optional[dict] = None,
-                      location: Optional[dict] = None) -> Source:
+                      location: Optional[dict] = None, declarant: Optional[dict] = None) -> Source:
         s = self.source(sid)
         before = {"label": s.label, "clock_offset": format_offset(s.clock_offset),
                   "camera_offsets": {k: format_offset(v) for k, v in s.camera_offsets.items()}}
@@ -262,13 +274,16 @@ class Case:
             s.device = _device(device)
         if location is not None:
             s.location = _location(location)
+        if declarant is not None:
+            s.declarant = parse_declarant(declarant)
         with _LOCK:
             self.save()
         after = {"label": s.label, "clock_offset": format_offset(s.clock_offset),
                  "camera_offsets": {k: format_offset(v) for k, v in s.camera_offsets.items()}}
         self.audit.append("source_updated", case_id=self.case_id, source=sid, before=before, after=after,
                           device=asdict(s.device) if device is not None else None,
-                          location=s.location if location is not None else None, by=user)
+                          location=s.location if location is not None else None,
+                          declarant=s.declarant if declarant is not None else None, by=user)
         return s
 
     def remove_source(self, sid: str, user: str = "") -> None:
@@ -316,6 +331,31 @@ def _device(d: dict) -> Device:
         if not isinstance(v, str) or len(v) > 200:
             raise ValueError(f"device {k} must be text (at most 200 characters)")
     return dev
+
+
+DECLARANT_FIELDS = ("name", "relation_name", "address", "designation", "place")
+
+
+def parse_declarant(d: Optional[dict]) -> Dict[str, str]:
+    """A certificate declarant (Part A: the person in charge of the device; Part B: the expert).
+    Only what the officer typed – the tool never fills in a person's particulars."""
+    if d is None:
+        return {}
+    if not isinstance(d, dict):
+        raise ValueError("declarant must be an object")
+    bad = set(d) - set(DECLARANT_FIELDS)
+    if bad:
+        raise ValueError(f"unknown declarant field(s): {sorted(bad)}")
+    out = {}
+    for k in DECLARANT_FIELDS:
+        v = d.get(k, "")
+        if v is None:
+            v = ""
+        if not isinstance(v, str) or len(v) > 200:
+            raise ValueError(f"declarant {k} must be text (at most 200 characters)")
+        if v.strip():
+            out[k] = v.strip()
+    return out
 
 
 def _location(d: dict) -> Dict[str, float]:
@@ -377,4 +417,4 @@ class CaseStore:
         return Case.load(root)
 
 
-__all__ = ["Case", "CaseStore", "Device", "Source", "calibrate", "format_offset", "parse_offset"]
+__all__ = ["Case", "CaseStore", "Device", "Source", "calibrate", "format_offset", "parse_declarant", "parse_offset"]

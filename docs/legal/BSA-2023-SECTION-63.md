@@ -73,7 +73,8 @@ Status: **current** · For: developers, legal reviewers · Used by `cctv_analysi
 ## How the tool fills it
 | Schedule item | Filled from | Left for the declarant |
 |---|---|---|
-| Name, relation, address (Part A and B) | the officer may type them in the export dialog | yes, if not typed |
+| Name, relation, address, place (Part A) | typed once per source (*Court bundle › Part A*), audited | yes, if not typed |
+| Name, relation, address, designation, place (Part B) | typed once per case, audited | yes, if not typed |
 | Device type ticks | each source's *device kind* (an NVR is ticked as **DVR**: the Schedule has no NVR box; "Other" plus the text for anything else) | — |
 | Make & Model, Colour, Serial, IMEI/UIN/UID/MAC/Cloud ID | the source's device particulars | blanks print as lines |
 | Other relevant information | storage medium, operating system, custodian, clock correction, file count, Merkle root | — |
@@ -83,6 +84,12 @@ Status: **current** · For: developers, legal reviewers · Used by `cctv_analysi
 | Hash report | enclosed table: file name, camera, timestamp span (calibrated and DVR clock), SHA-256; plus the acquisition SHA-256 of every seized file | — |
 | Signature | never filled | **always** |
 | Date, Time (IST, 24 h), Place | date/time of generation; place if typed | place if not typed |
+
+**One certificate per device.** Section 63(4)(c) asks for a certificate signed by "a person in
+charge of the computer or communication device or the management of the relevant activities" and
+an expert. A shop owner is in charge of his DVR and of nothing else, so a bundle with recordings of
+three DVRs carries three certificates (`certificates/<source>/`), each listing one device, the
+records produced from it and its acquisition hashes; Part B is the same expert on each.
 
 The tool does not affirm anything on anyone's behalf: the declarations are made by the people who
 sign Part A and Part B, who must check every particular before signing.
