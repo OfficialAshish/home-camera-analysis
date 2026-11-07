@@ -38,8 +38,18 @@ police, without changing the single-folder screens:
   and `docs/gem/` (technical specifications, Make in India declaration, terms, EULA, police
   handover runbook – templates with explicit seller blanks, no certification claims).
 
-Gate on the final state: see section 5 (full pytest, ruff, mypy in the CI environment, notebook
-regenerated, self-test, mutation check, CI on GitHub).
+Gate on the final code (`42e3672`), each executed, not inferred:
+* `pytest -q` in a clean worktree checkout: **155 passed, 2 deselected, EXIT 0** (10 min 16 s; the 2
+  deselected are the `release` tests that need the owner's credentials, docs/CREDENTIAL-TASKS.md);
+* `ruff check .` clean; `mypy` clean in a CI-equivalent environment; notebook regenerated and
+  identical (`git diff --exit-code`); `python -m cctv_analysis.app --self-test` exit 0 with every check
+  `True` (incl. case API, certificate PDF, forensic filters, appearance vector);
+* `tools/mutation_check.py` (fixed tool, finding 27): result in section 5;
+* GitHub CI on `42e3672`: lint, test (14 min on a clean runner, SigLIP-2 downloaded and cached) and
+  windows-app green. The Windows job's own report (PR #2 comment 6705066144) shows
+  `run_app.bat --self-test` and `run_app.bat --install --self-test` both ending with every check
+  `True` – the second in a fresh `.venv` (Python 3.11.9, torch 2.15.0+cpu, app 1.0.0) built by the
+  launcher itself, with the bundled LGPL ffmpeg on PATH (encoder `libopenh264`).
 
 ## 2. Issues found and how each was fixed (with evidence)
 | # | Issue | Fix | Evidence |
@@ -69,8 +79,8 @@ regenerated, self-test, mutation check, CI on GitHub).
 | 23 | **Mutation check found the certificate-root check unguarded**: a forged root was caught only by the checksum list, so removing the root check survived | test adds a consistent forgery (checksum list rewritten to match): only the recomputed Merkle root exposes it | the mutation now fails `test_checksums_verify_with_sha256sum_and_tampering_is_detected` |
 | 24 | Journey map labels near the right edge were cut off (seen in the screenshots) | labels anchored to the left of dots in the right part of the map | screenshot `5-journey.png` |
 | 25 | **The memory governor (85 %/93 %) had no test at all** | `tests/test_resources.py`: batch sizes, waiting with a time limit, appearance indexing under 99 % pressure gives the same vectors in batches of one | 3 tests; mutation of the 85 % rule fails them |
-| 27 | **`tools/mutation_check.py` could leave mutated bytecode behind**: a same-size mutation restored within the same second left a `.pyc` that still matched the restored source (whole-second mtime + size), so later runs executed the mutated code – found when a full run failed `test_indian_format_fit` after a mutation run (pyc 08:46:24.619, source restored 08:46:24.749, both 24 458 bytes) | mutated runs use `PYTHONDONTWRITEBYTECODE=1`; the file's bytecode is dropped before the base run and after the restore | positive control: with the old tool the next normal run of the test fails (reproduced at 09:19:25), with the new tool it passes; all `__pycache__` of both trees deleted |
 | 26 | The hash report gave each original segment the event's span although a stream copy starts at a keyframe (up to a few seconds earlier) | footnote on the certificate (HTML and PDF) | `test_certificate_follows_the_schedule_and_lists_real_hashes` asserts the sentence |
+| 27 | **`tools/mutation_check.py` could leave mutated bytecode behind**: a same-size mutation restored within the same second left a `.pyc` that still matched the restored source (whole-second mtime + size), so later runs executed the mutated code – found when a full run failed `test_indian_format_fit` after a mutation run (pyc 08:46:24.619, source restored 08:46:24.749, both 24 458 bytes) | mutated runs use `PYTHONDONTWRITEBYTECODE=1`; the file's bytecode is dropped before the base run and after the restore | positive control: with the old tool the next normal run of the test fails (reproduced at 09:19:25), with the new tool it passes; all `__pycache__` of both trees deleted |
 
 ## 3. Known limitations and where I was wrong
 Limitations (not rounded up):
@@ -109,21 +119,41 @@ Where I was wrong this round:
   killed by a sandbox restart and had to be repeated.
 * Local mypy (in `.venv`) reports stub errors that CI's environment (ruff/mypy/nbformat only)
   does not; all type checks quoted here use a CI-equivalent environment.
+* In the new governor test I expected batch 4 at 95 % RAM; the rule (one halving per 5 points over
+  85 %, plus one) gives 2 – my arithmetic, test corrected. In one API test I used the source id
+  `mall-gate` for a folder whose id is `mall-gate-nvr`.
+* My first full mutation run (35/36 at `c2ddde3`) ran partly with the stale mutated `plates` bytecode
+  of finding 27. Each verdict still compared a passing base run with a failing mutated run, but
+  the run was repeated end to end with the fixed tool (section 5).
 
 ## 4. Infrastructure, process and code improvements
-* CI: test-model cache key covers the new case tests (SigLIP-2 is downloaded once and cached);
-  windows-app job runs `run_app.bat --self-test`.
+* CI: test-model cache key covers the new case tests (SigLIP-2 is downloaded once and cached).
 * Self-test now also checks the case API, the certificate PDF, the forensic filters and the
   appearance vector (positive control: a broken PDF builder makes it exit 1).
 * `app/common.py` holds the request helpers once; case endpoints live in their own module
   (`case_api.register`), registered by the server; UI split into `app.js` (helpers, single-folder
   screens) and `case.js` (case screens) with a `TAB_HOOKS` seam.
-* Mutation harness: 3 entries repaired, 12 added (32 → 36 entries).
+* Mutation harness: 3 entries repaired after refactors, 14 added for the new guards (23 → 37
+  entries), and it can no longer leave mutated bytecode behind (finding 27).
+* CI's Windows job now executes the launcher twice (detected Python; fresh `.venv` install) and
+  posts its report on the pull request, so the result can be read and quoted.
 * Documentation: index updated with lifecycle status, previous status archived, decisions D19–D23.
 
-## 5. Commits (all on `origin/engineering/foundation`)
-| commit | summary |
-|---|---|
-| 20b06e3 | investigation core: cases, ingest, re-ID, forensic filters, journey, Section 63 bundle, raw-stream fix |
-| ef9ede8 | one Section 63 certificate per device, stored declarants, bundle README, verification of every certificate |
-| (filled at round close) | |
+## 5. Mutation check and commits
+`tools/mutation_check.py` on `42e3672` (clean worktree, fixed tool): **37/37 mutations killed**, exit 0 (each guard removed in turn makes its test fail; the test passes on the real code first). The worktree was clean afterwards (`git status`).
+
+All commits are on `origin/engineering/foundation` (checked with `git ls-remote` after each push) and
+`main` was fast-forwarded to the last one at round close. CI cancels a run when a newer commit is
+pushed to the same branch; "superseded" commits are covered by the next green run, which tests the
+cumulative state.
+| commit | summary | CI |
+|---|---|---|
+| 20b06e3 | investigation core: cases, ingest, re-ID, forensic filters, journey, Section 63 bundle, raw-stream fix | superseded by the next push (concurrency cancel) |
+| ef9ede8 | one Section 63 certificate per device, stored declarants, bundle README, every certificate verified | green |
+| f441ea2 | case API and screens, Quick investigation, cross-source face/plate sightings, moved drives (relink), run_app.bat, self-test, docs/gem | green |
+| c2ddde3 | describe-it search can be enabled after analysis (keyframe backfill); stills re-verified from the recording | superseded by the next push |
+| 709190b | certificate-root and memory-governor tests, keyframe note on the certificate, map labels | superseded by the next push |
+| b27ed1f | `run_app.bat --install`, executed by the Windows job | green |
+| 6fcdb7a | Windows job posts the launcher evidence on the PR | superseded by the next push |
+| 42e3672 | mutation_check never leaves mutated bytecode behind | green |
+| (this commit) | round status | – |
