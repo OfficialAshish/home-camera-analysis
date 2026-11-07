@@ -18,21 +18,30 @@ ACCEPT = r"""
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
-$deadline = (Get-Date).AddSeconds(60)
+$T = [System.Windows.Automation.TreeScope]
+# the dialog is owned by the helper's (invisible) owner window, and UI Automation lists owned
+# windows under their owner - so it is searched among all descendants, not only top-level windows
+$cond = New-Object System.Windows.Automation.AndCondition(
+  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, "Browse For Folder")),
+  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
+$deadline = (Get-Date).AddSeconds(90)
 while ((Get-Date) -lt $deadline) {
-  $cond = New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, "Browse For Folder")
-  $win = $A::RootElement.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)
+  $win = $A::RootElement.FindFirst($T::Descendants, $cond)
   if ($win) {
     $r = $win.Current.BoundingRectangle
     Write-Output ("FOUND {0}x{1} offscreen={2}" -f $r.Width, $r.Height, $win.Current.IsOffscreen)
     $okc = New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, "OK")
-    $ok = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $okc)
+    $ok = $win.FindFirst($T::Descendants, $okc)
     $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
     exit 0
   }
-  Start-Sleep -Milliseconds 300
+  Start-Sleep -Milliseconds 500
 }
 Write-Output "NOT FOUND"
+# what was on the screen instead (for the CI log)
+$A::RootElement.FindAll($T::Children, [System.Windows.Automation.Condition]::TrueCondition) |
+  ForEach-Object { Write-Output ("  window: '{0}' class={1} pid={2}" -f $_.Current.Name, $_.Current.ClassName, $_.Current.ProcessId) }
+Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ("  powershell pid={0} window='{1}'" -f $_.Id, $_.MainWindowTitle) }
 exit 1
 """
 
@@ -52,8 +61,8 @@ def test_the_windows_folder_dialog_opens_on_screen_and_returns_the_chosen_folder
     t = threading.Thread(target=ask)
     t.start()
     ui = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ACCEPT],
-                        capture_output=True, text=True, timeout=120)
-    t.join(120)
+                        capture_output=True, text=True, timeout=150)
+    t.join(150)
     print(ui.stdout, ui.stderr)
     assert ui.returncode == 0 and "FOUND" in ui.stdout, ui.stdout + ui.stderr
     assert "offscreen=False" in ui.stdout                    # visible, not hidden behind a minimised owner
