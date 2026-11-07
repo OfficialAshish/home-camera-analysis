@@ -1139,7 +1139,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         w_, h_ = int(min(W - x, roi[2])), int(min(H - y, roi[3]))
         if w_ < 4 or h_ < 4:
             raise ApiError(422, "the region is too small or outside the picture")
-        return jsonify(t=round(t, 3), roi=[x, y, w_, h_], size=[W, H], kind=kind)
+        return jsonify(t=round(t, 3), roi=[x, y, w_, h_])
 
     def _enh_public(r: dict) -> dict:
         return {k: r.get(k) for k in ("name", "input", "log", "source", "input_sha256", "output_sha256", "created",

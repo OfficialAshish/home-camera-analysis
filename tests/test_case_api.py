@@ -457,7 +457,10 @@ def test_the_studio_opens_on_a_person_and_super_resolves_the_region(env, case):
     q = {"source": "mall-gate", "event": p["event_id"], "track": p["track"]}
     person = c.get(f"/api/cases/{CID}/roi", query_string={**q, "kind": "person"}, headers=H()).get_json()
     face = c.get(f"/api/cases/{CID}/roi", query_string={**q, "kind": "face"}, headers=H()).get_json()
-    W, H_ = person["size"]
+    assert set(person) == {"t", "roi"}                                         # response minimalism
+    whole = c.post(f"/api/cases/{CID}/enhance/preview", json={"source_id": "mall-gate", "event_id": p["event_id"],
+                                                              "t": person["t"], "chain": []}, headers=H()).get_json()
+    W, H_ = whole["width"], whole["height"]
     x, y, w, h = person["roi"]
     assert 0 <= x and 0 <= y and x + w <= W and y + h <= H_ and w >= 4 and h > w           # a standing person
     fx, fy, fw, fh = face["roi"]
