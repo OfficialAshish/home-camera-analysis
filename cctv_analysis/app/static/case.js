@@ -490,7 +490,7 @@ $("jr-reel").addEventListener("click", async (ev) => {
     const j = await waitJob(r.job, () => clear($("jr-reel-out"), el("p", { class: "hint", text: "Making the highlight reel from the original recordings…" })));
     if (j.status !== "done") throw new Error(j.error || j.status);
     const x = j.result;
-    clear($("jr-reel-out"), el("h3", { text: `Highlight reel · ${x.parts} part(s) · ${dur(x.seconds)}` }), el("video", { controls: "", preload: "metadata", src: caseApi("/exports/" + encodeURIComponent(x.name)) }),
+    clear($("jr-reel-out"), el("h3", { text: `Highlight reel · ${x.sightings} sighting(s) in ${x.parts} piece(s) of footage · ${dur(x.seconds)}` }), el("video", { controls: "", preload: "metadata", src: caseApi("/exports/" + encodeURIComponent(x.name)) }),
       el("p", { class: "small" }, el("a", { href: caseApi("/exports/" + encodeURIComponent(x.name)), download: x.name, text: "Download " + x.name }), el("span", { class: "mono", text: "  SHA-256 " + x.sha256 })),
       el("p", { class: "hint", text: "Every frame carries the source, camera, calibrated time and the DVR's own clock. The reel is a viewing aid; the court bundle holds the original segments." }));
   } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }

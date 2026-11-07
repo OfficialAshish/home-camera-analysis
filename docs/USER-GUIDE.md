@@ -48,6 +48,9 @@ click **Rebuild journey**: the route shows each camera stop with arrival, depart
 time to the next. With map positions of the cameras (*Cases › source › Map position*) the route is
 also drawn on a plan (no internet map is used). **Make highlight reel** makes one video of the
 ticked sightings; every frame shows source, camera, corrected time and the DVR's own time.
+Sightings that share the same seconds of a recording (several people in one event, one person
+seen as several tracks) are joined into one piece, so no second of footage appears twice; the
+reel's index lists which sightings each piece shows.
 
 ## A4. Forensic Studio
 The frame is decoded from the original recording at the time shown (change the time and *Load

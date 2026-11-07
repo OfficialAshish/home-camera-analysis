@@ -113,7 +113,7 @@ never limited. A source left out says so (`skipped`).
 | `POST …/sightings` · `GET …/people` · `POST …/text-search` | sightings + journey · people by clothing colour · describe-it search |
 | `GET …/video` · `GET …/frame` · `GET …/file` | recording (playback copy) · original frame (PNG) · a file of the case |
 | `POST …/enhance/preview` · `POST …/enhance/save` · `GET …/enhancements` · `GET /api/enhance/filters` | Forensic Studio |
-| `POST …/reel` · `POST …/bundle` · `GET …/exports[/<name>]` · `POST …/exports/<name>/verify` | jobs: highlight reel, court bundle · downloads · verification |
+| `POST …/reel` · `POST …/bundle` · `GET …/exports[/<name>]` · `POST …/exports/<name>/verify` | jobs: highlight reel (`journey.reel_segments`: overlapping sightings of one recording merged, no second twice; result `parts`, `sightings`, `index`), court bundle · downloads · verification |
 | `GET …/certificate?source=` · `GET …/audit` | printable certificate preview · case audit log |
 | `POST /api/fs/locate` | where a dropped folder is (by its name and the sizes of its files) |
 Responses carry paths relative to the case folder; files are served by `…/file?p=`.

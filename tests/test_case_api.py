@@ -417,6 +417,40 @@ def test_highlight_reel_of_a_curated_journey(env, case):
     assert dl.status_code == 200 and hashlib.sha256(dl.data).hexdigest() == res["sha256"]
 
 
+def test_a_reel_never_shows_the_same_seconds_twice(env, case):
+    """Reported: a reel of several sightings repeated the same footage with the same time stamp 2-3
+    times – many tracks of one event (or one person split into tracks) each became a part. The
+    sightings of one recording are merged into non-overlapping segments."""
+    c = env["c"]
+    ppl = c.get(f"/api/cases/{CID}/people", headers=H()).get_json()["people"]
+    q = next(p for p in ppl if p["source_id"] == "mall-gate")
+    body = {"kind": "appearance", "min_score": 0.0, "query": {"source_id": "mall-gate", "event_id": q["event_id"],
+                                                               "track": q["track"]}}
+    pts = c.post(f"/api/cases/{CID}/sightings", json=body, headers=H()).get_json()["points"]
+    gate = [p for p in pts if p["source_id"] == "mall-gate"]
+    assert len(gate) >= 4                                            # many sightings in one 14 s recording
+    j = wait(c, c.post(f"/api/cases/{CID}/reel", json={**body, "pre": 1, "post": 1}, headers=H()).get_json()["job"]["id"])
+    assert j["status"] == "done", j
+    res = j["result"]
+    assert res["sightings"] == len(pts) and res["parts"] < res["sightings"]
+    by_video = {}
+    for x in res["index"]:
+        by_video.setdefault((x["source_id"], x["rel_path"]), []).append((x["video_start"], x["video_end"]))
+    for spans in by_video.values():                                  # no second of a recording twice
+        spans.sort()
+        assert all(a[1] < b[0] for a, b in zip(spans, spans[1:])), spans
+    gate_secs = sum(e - s for (sid, _), v in by_video.items() if sid == "mall-gate" for s, e in v)
+    assert gate_secs <= 14 + 2 + 0.5                                  # at most the recording + pre/post
+    dl = c.get(f"/api/cases/{CID}/exports/{res['name']}", headers=H())
+    path = env["tmp"] / "reel_check.mp4"
+    path.write_bytes(dl.data)
+    m = V.probe(str(path))
+    import hashlib as _h
+    hashes = [_h.md5(cv2.resize(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)[60:-40], (64, 36)).tobytes()).hexdigest()
+              for _, f in V.iter_frames(str(path), 12, 0, 0, None, src_size=(m["width"], m["height"]))]
+    assert len(hashes) >= 0.9 * res["seconds"] * 12 and len(set(hashes)) >= 0.95 * len(hashes)   # no repeated frames
+
+
 def test_court_bundle_has_one_certificate_per_device_and_verifies(env, case):
     c = env["c"]
     ev = c.get(f"/api/cases/{CID}/timeline", headers=H()).get_json()["events"]

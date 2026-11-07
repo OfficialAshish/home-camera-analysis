@@ -756,7 +756,8 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
             c.audit.append("reel_exported", case_id=c.case_id, file=name, sha256=sha, parts=res["parts"],
                            seconds=res["seconds"], by=user(),
                            sightings=[f"{p['source_id']}/{p['event_id']}/{p['track']}" for p in pts])
-            return {"name": name, "file": f"exports/{name}", "parts": res["parts"], "seconds": res["seconds"],
+            return {"name": name, "file": f"exports/{name}", "parts": res["parts"], "sightings": res["sightings"],
+                    "seconds": res["seconds"],
                     "sha256": sha, "index": res["index"]}
         job, _ = jobs.start("export", run)
         return jsonify(job=job.public()), 202

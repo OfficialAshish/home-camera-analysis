@@ -286,13 +286,68 @@ def journey(points: List[dict], gap: float = 120.0) -> dict:
                                                          for s in stops)}
 
 
+def _dt(text: Optional[str]) -> Optional[dt.datetime]:
+    try:
+        return dt.datetime.strptime(text, FMT) if text else None
+    except ValueError:
+        return None
+
+
+def _at_zero(points: List[dict], key: str) -> Optional[dt.datetime]:
+    """The time at video offset 0 of one recording, from the first sighting that has the time."""
+    for p in points:
+        d = _dt(p.get(key))
+        if d is not None:
+            return d - dt.timedelta(seconds=float(p.get("t_off") or 0))
+    return None
+
+
+def reel_segments(points: List[dict], pre: float = 2.0, post: float = 4.0, gap: float = 1.0) -> List[dict]:
+    """Non-overlapping pieces of footage that together cover every sighting, in calibrated order.
+
+    Several sightings often share the same seconds of one recording – several people of one
+    event, one person split into several tracks, a curated list with overlapping events. Each
+    sighting's window (``t_off - pre`` … ``t_off + duration + post``) is merged with the windows of
+    the same recording it overlaps (or nearly touches, ``gap``), so no second of footage is shown
+    twice. Times are anchored on the recording: DVR time at video offset 0 = the sighting's DVR
+    time − its offset; the calibrated time likewise."""
+    items = []
+    for p in points:
+        vp = p.get("video_path")
+        if not vp or not os.path.exists(vp):
+            continue
+        s = max(0.0, float(p.get("t_off") or 0) - pre)
+        e = float(p.get("t_off") or 0) + max(0.0, float(p.get("duration") or 0)) + post
+        items.append((vp, s, max(e, s + 1.0), p))
+    items.sort(key=lambda x: (x[0], x[1]))
+    segs: List[dict] = []
+    for vp, s, e, p in items:
+        last = segs[-1] if segs and segs[-1]["video_path"] == vp else None
+        if last is not None and s <= last["end"] + gap:
+            last["end"] = max(last["end"], e)
+            last["points"].append(p)
+            continue
+        segs.append({"video_path": vp, "start": s, "end": e, "points": [p]})
+    for g in segs:
+        p0 = g["points"][0]
+        g["cal_at_zero"] = _at_zero(g["points"], "calibrated_time")      # calibrated time at video offset 0
+        g["dvr_at_zero"] = _at_zero(g["points"], "dvr_time")
+        g["calibrated_start"] = (g["cal_at_zero"] + dt.timedelta(seconds=g["start"])).strftime(FMT) \
+            if g["cal_at_zero"] else None
+        for k in ("source_id", "source_label", "camera", "rel_path", "offset_seconds"):
+            g[k] = p0.get(k)
+    segs.sort(key=lambda g: (g["calibrated_start"] or "9999", g["source_id"] or "", g["start"]))
+    return segs
+
+
 def highlight_reel(points: List[dict], dest: str, pre: float = 2.0, post: float = 4.0, width: int = 960,
                    fps: int = 12) -> dict:
-    """One MP4 of the sightings in calibrated order; every frame carries source/camera/time text."""
+    """One MP4 of the sightings in calibrated order, every second of footage once
+    (``reel_segments``); every frame carries source / camera / calibrated time / DVR time."""
     import cv2
     import numpy as np
-    pts = [p for p in points if p.get("video_path") and os.path.exists(p["video_path"])]
-    if not pts:
+    segs = reel_segments(points, pre, post)
+    if not segs:
         raise ValueError("no sighting has an available source video")
     W = width // 2 * 2
     H = int(round(W * 9 / 16)) // 2 * 2
@@ -310,28 +365,26 @@ def highlight_reel(points: List[dict], dest: str, pre: float = 2.0, post: float 
 
     index, frames = [], 0
     try:
-        for n, p in enumerate(pts, 1):
-            meta = V.probe(p["video_path"])
-            start = max(0.0, p["t_off"] - pre)
-            dur = max(1.0, (p["duration"] or 0) + pre + post)
-            cal0 = dt.datetime.strptime(p["calibrated_time"], FMT) if p["calibrated_time"] else None
-            dvr0 = dt.datetime.strptime(p["dvr_time"], FMT) if p["dvr_time"] else None
-            index.append({"n": n, "reel_start": round(frames / fps, 2), **{k: p[k] for k in (
-                "source_id", "camera", "event_id", "track", "calibrated_time", "dvr_time")}})
-            for t, fr in V.iter_frames(p["video_path"], fps, W, start, dur, src_size=(meta["width"], meta["height"])):
+        for n, g in enumerate(segs, 1):
+            meta = V.probe(g["video_path"])
+            index.append({"n": n, "reel_start": round(frames / fps, 2), "source_id": g["source_id"],
+                          "camera": g["camera"], "rel_path": g["rel_path"], "video_start": round(g["start"], 2),
+                          "video_end": round(g["end"], 2), "calibrated_time": g["calibrated_start"],
+                          "sightings": [{"event_id": p["event_id"], "track": p.get("track")} for p in g["points"]]})
+            for t, fr in V.iter_frames(g["video_path"], fps, W, g["start"], g["end"] - g["start"],
+                                       src_size=(meta["width"], meta["height"])):
                 h, w = fr.shape[:2]
                 s = min(W / w, H / h)
                 img = np.zeros((H, W, 3), np.uint8)
                 rs = cv2.resize(fr, (max(2, int(w * s)), max(2, int(h * s))), interpolation=cv2.INTER_AREA)
                 y0, x0 = (H - rs.shape[0]) // 2, (W - rs.shape[1]) // 2
                 img[y0:y0 + rs.shape[0], x0:x0 + rs.shape[1]] = rs
-                d = t - p["t_off"]
-                cal = (cal0 + dt.timedelta(seconds=d)).strftime(FMT) if cal0 else "time unknown"
-                dvr = (dvr0 + dt.timedelta(seconds=d)).strftime(FMT) if dvr0 else ""
-                bar(img, f"{n}/{len(pts)}  {p['source_label']} / {p['camera']}   {cal}", int(34 * sc) + 8,
+                cal = (g["cal_at_zero"] + dt.timedelta(seconds=t)).strftime(FMT) if g["cal_at_zero"] else "time unknown"
+                dvr = (g["dvr_at_zero"] + dt.timedelta(seconds=t)).strftime(FMT) if g["dvr_at_zero"] else ""
+                bar(img, f"{n}/{len(segs)}  {g['source_label']} / {g['camera']}   {cal}", int(34 * sc) + 8,
                     0.85 * sc, (0, 255, 255))
-                bar(img, f"DVR clock {dvr}  ({p['offset_seconds']:+.0f} s)  {p['rel_path']} @ {V.fmt_offset(t)}",
-                    H - 6, 0.5 * sc, (255, 255, 255))
+                bar(img, f"DVR clock {dvr}  ({float(g['offset_seconds'] or 0):+.0f} s)  {g['rel_path']} @ "
+                         f"{V.fmt_offset(t)}", H - 6, 0.5 * sc, (255, 255, 255))
                 proc.stdin.write(img.tobytes())
                 frames += 1
         proc.stdin.close()
@@ -344,7 +397,8 @@ def highlight_reel(points: List[dict], dest: str, pre: float = 2.0, post: float 
     if proc.returncode != 0 or frames == 0:
         raise RuntimeError("the reel could not be encoded")
     os.replace(part, dest)
-    return {"path": dest, "parts": len(pts), "seconds": round(frames / fps, 1), "index": index}
+    return {"path": dest, "parts": len(segs), "sightings": sum(len(g["points"]) for g in segs),
+            "seconds": round(frames / fps, 1), "index": index}
 
 
-__all__ = ["face_identities", "highlight_reel", "journey", "sightings", "timeline", "timeline_page"]
+__all__ = ["face_identities", "highlight_reel", "reel_segments", "journey", "sightings", "timeline", "timeline_page"]

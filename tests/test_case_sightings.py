@@ -124,3 +124,28 @@ def test_the_journey_of_a_face_follows_calibrated_time(case):
     # Shop DVR 10:15 -11 min = 10:04 true; Bank DVR 10:20 +2 min = 10:22 true: Shop first
     assert [s["source_id"] for s in j["stops"]] == ["shop-dvr", "bank-dvr"]
     assert j["stops"][0]["to_next_seconds"] > 15 * 60
+
+
+def test_reel_segments_cover_every_sighting_once(tmp_path):
+    """Overlapping sightings of one recording become one piece of footage (no second twice);
+    times are anchored on the recording, so a merged piece keeps the correct clock; other
+    recordings stay separate; pieces come in calibrated order."""
+    a, b = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    a.write_bytes(b"x")
+    b.write_bytes(b"x")
+
+    def pt(path, t, d, cal, dvr, sid="s1"):
+        return {"video_path": str(path), "t_off": t, "duration": d, "calibrated_time": cal, "dvr_time": dvr,
+                "source_id": sid, "source_label": sid, "camera": "ch1", "rel_path": path.name, "offset_seconds": -60,
+                "event_id": f"e{t}", "track": 1}
+    pts = [pt(a, 10, 3, "2026-01-01 10:00:10", "2026-01-01 10:01:10"),
+           pt(a, 12, 4, None, None),                                     # same seconds, no time of its own
+           pt(a, 30, 1, "2026-01-01 10:00:30", "2026-01-01 10:01:30"),   # far apart: its own piece
+           pt(b, 5, 2, "2026-01-01 09:59:00", "2026-01-01 10:00:00", "s2"),
+           {"video_path": str(tmp_path / "gone.mp4"), "t_off": 1}]         # recording not available
+    segs = J.reel_segments(pts, pre=2, post=4)
+    assert [(g["rel_path"], g["start"], g["end"], len(g["points"])) for g in segs] == \
+        [("b.mp4", 3.0, 11.0, 1), ("a.mp4", 8.0, 20.0, 2), ("a.mp4", 28.0, 35.0, 1)]
+    assert segs[1]["calibrated_start"] == "2026-01-01 10:00:08"
+    assert segs[1]["dvr_at_zero"].strftime(J.FMT) == "2026-01-01 10:01:00"
+    assert sum(len(g["points"]) for g in segs) == 4
