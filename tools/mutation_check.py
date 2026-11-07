@@ -126,6 +126,53 @@ MUTATIONS = [
     ("evidence tamper detection", "cctv_analysis/evidence.py",
      'bad = [n for n, h in manifest["files"].items() if hashlib.sha256(z.read(n)).hexdigest() != h]', "bad = []",
      "tests/test_app_api.py::test_evidence_export_and_verification", True),
+    # ---- added in the round of 2026-11-07
+    ("an uncertain plate read is not reported", "cctv_analysis/plates.py",
+     "    return bool(text) and confidence >= min_confidence and (valid_format or len(text) >= 6)",
+     "    return bool(text) and (valid_format or len(text) >= 6)",
+     "tests/test_plates.py::test_vote_and_watchlist", False),
+    ("the analysis uses plate_min_confidence", "cctv_analysis/pipeline.py",
+     'ok = is_reportable(res["text"], res["confidence"], res["valid_format"], cfg.plate_min_confidence)',
+     'ok = is_reportable(res["text"], res["confidence"], res["valid_format"])',
+     "tests/test_plates.py::test_an_uncertain_read_is_not_the_plate_but_its_guess_and_position_are_kept", True),
+    ("the examiner's plate reading counts", "cctv_analysis/reviews.py",
+     '    if rd is not None:\n        out["text"] = rd["text"]', '    if False:\n        out["text"] = rd["text"]',
+     "tests/test_app_api.py::test_an_examiner_types_a_plate_and_that_reading_counts", True),
+    ("an examined plate is not 'not read'", "cctv_analysis/app/results.py",
+     '        eff = [p for p in eff if not p["text"] and p["reading"] is None]',
+     '        eff = [p for p in eff if not p["text"]]',
+     "tests/test_app_api.py::test_an_examiner_types_a_plate_and_that_reading_counts", True),
+    ("a reel shows every second once", "cctv_analysis/journey.py",
+     '        if last is not None and s <= last["end"] + gap:', "        if False:",
+     "tests/test_case_sightings.py::test_reel_segments_cover_every_sighting_once", False),
+    ("super-resolution is bit-exact", "cctv_analysis/enhance.py",
+     "    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)\n    gx = cv2.Sobel(g, cv2.CV_16S, 1, 0, ksize=3).astype(np.float32)\n"
+     "    gy = cv2.Sobel(g, cv2.CV_16S, 0, 1, ksize=3).astype(np.float32)\n"
+     "    m = np.minimum(np.sqrt(gx * gx + gy * gy) / 4.0, 255.0).round().astype(np.uint8)\n"
+     "    return cv2.GaussianBlur(m, (0, 0), 1.0).astype(np.float32) / 255.0",
+     "    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255.0\n"
+     "    gx = cv2.Sobel(g, cv2.CV_32F, 1, 0, ksize=3)\n    gy = cv2.Sobel(g, cv2.CV_32F, 0, 1, ksize=3)\n"
+     "    return cv2.GaussianBlur(cv2.magnitude(gx, gy), (0, 0), 1.0)",
+     "tests/test_forensic_enhancement.py::test_the_alignment_path_is_bit_exact_whatever_the_memory_alignment", False),
+    ("dropped folders are looked for next to recent ones", "cctv_analysis/app/case_api.py",
+     '    roots = [os.path.dirname(p.rstrip("\\\\/")) for p in recent if p] + [p for p in recent if p]',
+     "    roots = [p for p in recent if p]",
+     "tests/test_case_api.py::test_a_dropped_sibling_of_a_folder_used_before_is_found", False),
+    ("detect-only never loads the face recogniser", "cctv_analysis/faces.py",
+     "        self._rec = None\n", '        self._rec = cv2.FaceRecognizerSF.create(fetch("sface"), "")\n',
+     "tests/test_face_modes.py::test_detect_keeps_face_pictures_but_compares_nothing", True),
+    ("only 'unique' groups faces", "cctv_analysis/investigation.py",
+     '    return {"use_faces": mode != "off", "face_identities": mode == "unique",',
+     '    return {"use_faces": mode != "off", "face_identities": mode != "off",',
+     "tests/test_face_modes.py::test_reference_finds_only_the_reference_person", True),
+    ("the face mode overrides the run's options", "cctv_analysis/app/case_api.py",
+     '        req["options"] = {**req["options"], **face_options(mode, refs)}', "        pass",
+     "tests/test_case_api.py::test_the_face_mode_decides_the_face_settings_of_a_run", True),
+    ("the timeline filters by score", "cctv_analysis/journey.py", "            if min_score > 0:", "            if False:",
+     "tests/test_case_api.py::test_the_timeline_filters_by_score_and_kind", True),
+    ("AI providers fall back in order", "cctv_analysis/vlm.py",
+     "                self.failures[i] = self.failures.get(i, 0) + 1\n", "                raise\n",
+     "tests/test_vlm_providers.py::test_fallback_providers_answer_when_the_first_fails", True),
 ]
 
 

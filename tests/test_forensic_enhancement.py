@@ -255,3 +255,25 @@ def test_multi_frame_super_resolution_recovers_a_small_moving_plate():
         EN.super_resolve(frames[:1], roi, 4)
     with pytest.raises(ValueError):
         EN.super_resolve(frames, roi, 4, motion="bogus")
+
+
+def test_the_alignment_path_is_bit_exact_whatever_the_memory_alignment():
+    """OpenCV's float32 Sobel / Gaussian paths give last-bit differences depending on where the
+    buffers lie in memory (measured with the earlier float version: it differed in about 40–60 %
+    of the trials below), so the same frames gave a slightly different super-resolved picture and
+    a saved still could fail its reproduction check. The alignment inputs are computed
+    bit-exactly: identical in every trial, wherever the allocator puts the buffers."""
+    frames, roi, _ = _moving_plate_frames()
+    img = cv2.resize(EN.crop_roi(frames[7], [roi[0] - 5, roi[1] - 5, roi[2] + 10, roi[3] + 10]), None, fx=4, fy=4,
+                     interpolation=cv2.INTER_CUBIC)
+    rng = np.random.default_rng(3)
+    for fn in (EN._grad, EN._smooth_gray):
+        ref, junk = fn(img), []
+        for k in range(150):
+            junk.append(np.empty(int(rng.integers(1, 300_000)), np.uint8))      # move the allocator along
+            if len(junk) > 20:
+                junk.pop(int(rng.integers(0, len(junk))))
+            buf = np.empty(img.size + 64, np.uint8)
+            a = buf[k % 16:k % 16 + img.size].reshape(img.shape)
+            a[...] = img
+            assert np.array_equal(fn(a), ref), (fn.__name__, k)
