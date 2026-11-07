@@ -131,8 +131,22 @@ MUTATIONS = [
 
 def run(selection: str) -> int:
     env = dict(os.environ)
+    # never write bytecode of a mutated file: a same-size mutation restored within the same second
+    # would leave a .pyc that still matches the restored source (mtime in whole seconds + size),
+    # and every later run would silently execute the mutated code
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", "-p", "no:cacheprovider", selection],
                           cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800).returncode
+
+
+def _drop_bytecode(path: str) -> None:
+    """Remove cached bytecode of `path` (any interpreter tag), so the restored source is compiled again."""
+    d = os.path.join(os.path.dirname(path), "__pycache__")
+    stem = os.path.splitext(os.path.basename(path))[0] + "."
+    if os.path.isdir(d):
+        for f in os.listdir(d):
+            if f.startswith(stem) and f.endswith(".pyc"):
+                os.remove(os.path.join(d, f))
 
 
 def main():
@@ -149,6 +163,7 @@ def main():
         if src.count(orig) != 1:
             results.append((name, "SETUP-ERROR", f"original text found {src.count(orig)}x in {rel}"))
             continue
+        _drop_bytecode(path)                  # a stale .pyc from an interrupted run must not stand in for the source
         base = run(sel)                       # the test must pass on the real code first
         t0 = time.time()
         try:
@@ -158,6 +173,7 @@ def main():
         finally:
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(src)
+            _drop_bytecode(path)
         verdict = "KILLED" if (base == 0 and rc != 0) else ("BASE-FAILS" if base != 0 else "SURVIVED")
         results.append((name, verdict, f"{sel} ({time.time() - t0:.0f}s)"))
         print(f"{verdict:9s} {name:50s} {sel}", flush=True)
