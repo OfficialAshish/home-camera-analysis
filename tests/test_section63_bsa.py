@@ -117,7 +117,8 @@ def test_certificate_follows_the_schedule_and_lists_real_hashes(case_with_event,
     for phrase in ["THE SCHEDULE", "[See section 63(4)(c)]", "PART A", "(To be filled by the Party)",
                    "was under the lawful control for regularly", "it has not affected the electronic/digital record or its accuracy",
                    "PART B", "(To be filled by the Expert)", "(Hash report to be enclosed with the certificate)",
-                   "(Name, designation and signature)", "Time (IST):", "HASH REPORT"]:
+                   "(Name, designation and signature)", "Time (IST):", "HASH REPORT",
+                   "a segment may begin a few seconds before the span shown"]:
         assert phrase in page, phrase
     assert page.index("PART A") < page.index("PART B") < page.index("HASH REPORT")
     assert "☑ DVR" in page and "☐ Mobile" in page and "☑ SHA256" in page and "☐ MD5" in page
@@ -192,17 +193,26 @@ def test_checksums_verify_with_sha256sum_and_tampering_is_detected(case_with_eve
     with zipfile.ZipFile(extra, "a") as z:
         z.writestr("originals/planted.mp4", b"x")
     assert S63.verify_bundle(str(extra))["unlisted"] == ["originals/planted.mp4"]
-    # a forged certificate root
-    forged = tmp_path / "forged.zip"
-    with zipfile.ZipFile(dest) as zin, zipfile.ZipFile(forged, "w") as zout:
-        for n in zin.namelist():
-            data = zin.read(n)
-            if n == CERT + "certificate.json":
-                d = json.loads(data)
-                d["exhibits_merkle_root"] = "0" * 64
-                data = json.dumps(d).encode()
-            zout.writestr(n, data)
-    assert not S63.verify_bundle(str(forged))["ok"]
+    # a forged certificate root – naive (checksum list left alone) and consistent (checksum list
+    # rewritten to match): only the recomputed Merkle root exposes the second one
+    for consistent in (False, True):
+        forged = tmp_path / f"forged{int(consistent)}.zip"
+        with zipfile.ZipFile(dest) as zin, zipfile.ZipFile(forged, "w") as zout:
+            files = {n: zin.read(n) for n in zin.namelist()}
+            d = json.loads(files[CERT + "certificate.json"])
+            d["exhibits_merkle_root"] = "0" * 64
+            files[CERT + "certificate.json"] = json.dumps(d).encode()
+            if consistent:
+                lines = [ln.split("  ", 1) for ln in files["checksums.sha256"].decode().splitlines()]
+                files["checksums.sha256"] = "".join(
+                    f"{hashlib.sha256(files[n]).hexdigest() if n == CERT + 'certificate.json' else h}  {n}\n"
+                    for h, n in lines).encode()
+            for n, data in files.items():
+                zout.writestr(n, data)
+        v = S63.verify_bundle(str(forged))
+        assert not v["ok"], consistent
+        if consistent:
+            assert v["modified"] == [] and v["certificates"]["shop-a-dvr"]["merkle_ok"] is False
 
 
 def test_device_ticks_follow_the_schedule_boxes(case_with_event):

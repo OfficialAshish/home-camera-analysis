@@ -207,6 +207,8 @@ affected the electronic/digital record or its accuracy. The digital device or th
 <span class="mono">{c['seized_merkle_root']}</span></p>
 <table><tr><th>Source</th><th>File</th><th>Bytes</th><th>SHA-256</th></tr>{seized or '<tr><td colspan=4>not ingested</td></tr>'}</table>
 <p><small>Calibrated time = DVR clock + the clock correction stated for the device; the DVR clock is shown unchanged.
+Original segments are stream copies (not re-encoded) and start at a keyframe, so a segment may begin a few seconds
+before the span shown.
 Generated {E(c['generated'])} by {E(c['tool'])}. Certificate text follows {E(c['schedule'])}. Verify every listed file with
 <span class="mono">sha256sum -c checksums.sha256</span> in the bundle.</small></p>
 </body></html>"""
@@ -319,7 +321,9 @@ def certificate_pdf(c: dict, path: str) -> None:
     srows += [[P(E(x["source_id"]), small), P(E(x["file"]), mono), P(f"{x['bytes']:,}", small), P(x["sha256"], mono)]
               for x in c["seized_files"]] or [[P("not ingested", small), "", "", ""]]
     story += [grid(srows, [25 * mm, 60 * mm, 22 * mm, 73 * mm]), Spacer(1, 6),
-              P(f"Calibrated time = DVR clock + the clock correction stated for the device. Generated {E(c['generated'])} "
+              P("Calibrated time = DVR clock + the clock correction stated for the device. Original segments are stream "
+                "copies (not re-encoded) and start at a keyframe, so a segment may begin a few seconds before the span "
+                f"shown. Generated {E(c['generated'])} "
                 f"by {E(c['tool'])}. Certificate text follows {E(c['schedule'])}. Verify every file with "
                 "<font face='Courier'>sha256sum -c checksums.sha256</font>.", small)]
 

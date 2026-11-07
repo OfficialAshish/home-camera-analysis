@@ -439,7 +439,9 @@ function renderMap(stops) {
   pts.forEach(([x, y, s]) => {
     svg.appendChild(mk("circle", { cx: X(x), cy: Y(y), r: 13, class: "stopdot" }));
     svg.appendChild(mk("text", { x: X(x), y: Y(y) + 5, "text-anchor": "middle", class: "stopn" }, String(s.n)));
-    svg.appendChild(mk("text", { x: X(x) + 17, y: Y(y) - 8, class: "stoplabel" }, `${s.source_label} ${(s.arrival || "").slice(11, 16)}`));
+    const right = X(x) > W * 0.6;              // labels of points near the right edge go to the left of the dot
+    svg.appendChild(mk("text", { x: right ? X(x) - 17 : X(x) + 17, y: Y(y) - 8, class: "stoplabel", "text-anchor": right ? "end" : "start" },
+      `${s.source_label} ${(s.arrival || "").slice(11, 16)}`));
   });
   clear(box, el("p", { class: "hint", text: geo.length >= plan.length ? "Route on the cameras' latitude/longitude (north up, not to a road map)." : "Route on the site plan positions." }), svg);
 }

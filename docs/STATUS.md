@@ -66,6 +66,10 @@ regenerated, self-test, mutation check, CI on GitHub).
 | 20 | Describe-it search could not be turned on after a case was analysed: finished videos are skipped, so the index stayed empty and the advice "run again" did nothing | `semantic.backfill_index` embeds the saved keyframes of finished events during the next run | `test_describe_it_search_can_be_turned_on_later_without_analysing_again`: 0 videos re-analysed, ≥ 3 keyframes added, search answers; mutation fails it |
 | 21 | A stack-only still was reported "reproducible" without any check (nothing to re-run) | every save decodes the frame(s) from the recording again, re-runs stack and filters and compares the hash; stored as `reproduced_from_recording` and audited | `test_a_saved_still_is_reproduced_from_the_recording_or_flagged` (a simulated drifting decode is reported, a 3-frame stack reproduces); mutation fails it |
 | 22 | Text search re-implemented the ranking of `semantic.search_index` | reuses it | one ranking function |
+| 23 | **Mutation check found the certificate-root check unguarded**: a forged root was caught only by the checksum list, so removing the root check survived | test adds a consistent forgery (checksum list rewritten to match): only the recomputed Merkle root exposes it | the mutation now fails `test_checksums_verify_with_sha256sum_and_tampering_is_detected` |
+| 24 | Journey map labels near the right edge were cut off (seen in the screenshots) | labels anchored to the left of dots in the right part of the map | screenshot `5-journey.png` |
+| 25 | **The memory governor (85 %/93 %) had no test at all** | `tests/test_resources.py`: batch sizes, waiting with a time limit, appearance indexing under 99 % pressure gives the same vectors in batches of one | 3 tests; mutation of the 85 % rule fails them |
+| 26 | The hash report gave each original segment the event's span although a stream copy starts at a keyframe (up to a few seconds earlier) | footnote on the certificate (HTML and PDF) | `test_certificate_follows_the_schedule_and_lists_real_hashes` asserts the sentence |
 
 ## 3. Known limitations and where I was wrong
 Limitations (not rounded up):
