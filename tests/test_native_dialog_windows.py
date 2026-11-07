@@ -36,8 +36,22 @@ while ((Get-Date) -lt $deadline) {
       if ($dlg) {
         $r = $dlg.Current.BoundingRectangle
         Write-Output ("FOUND '{0}' {1}x{2} offscreen={3}" -f $dlg.Current.Name, $r.Width, $r.Height, $dlg.Current.IsOffscreen)
-        $ok = $dlg.FindFirst($T::Descendants, (New-Object $C($A::AutomationIdProperty, '1')))     # IDOK
-        $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        # OK = the button with control id IDOK (1); if UI Automation cannot press it, the dialog gets
+        # the same command a click sends (WM_COMMAND, IDOK)
+        $bc = New-Object System.Windows.Automation.AndCondition(
+          (New-Object $C($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)),
+          (New-Object $C($A::AutomationIdProperty, '1')))
+        $ok = $dlg.FindFirst($T::Descendants, $bc)
+        $pressed = $false
+        if ($ok) {
+          try { $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke(); $pressed = $true }
+          catch { Write-Output ("invoke failed: {0}" -f $_.Exception.Message) }
+        }
+        if (-not $pressed) {
+          Add-Type -Namespace W -Name U -MemberDefinition '[DllImport("user32.dll")] public static extern bool PostMessage(System.IntPtr h, uint m, System.IntPtr w, System.IntPtr l);'
+          [W.U]::PostMessage([System.IntPtr]$dlg.Current.NativeWindowHandle, 0x0111, [System.IntPtr]1, [System.IntPtr]::Zero) | Out-Null
+          Write-Output "OK sent as WM_COMMAND IDOK"
+        }
         exit 0
       }
     }
@@ -85,6 +99,7 @@ def test_the_windows_folder_dialog_opens_on_screen_and_returns_the_chosen_folder
     print(ui.stdout, ui.stderr)
     assert ui.returncode == 0 and "FOUND" in ui.stdout, ui.stdout + ui.stderr
     assert "offscreen=False" in ui.stdout and "Browse For Folder" in ui.stdout   # on screen, not minimised
+    assert "r" in out, "the dialog did not close after OK: " + ui.stdout
     r = out["r"]
     assert r.status_code == 200, r.get_json()
     assert os.path.normcase(r.get_json()["path"]) == os.path.normcase(str(target))
