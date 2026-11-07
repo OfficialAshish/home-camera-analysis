@@ -53,7 +53,19 @@ class FaceEngine:
     def __init__(self, cfg):
         self.cfg = cfg
         self.det = cv2.FaceDetectorYN.create(fetch("yunet"), "", (320, 320), cfg.face_score_threshold, 0.3, 50)
-        self.rec = cv2.FaceRecognizerSF.create(fetch("sface"), "")
+        self._rec = None
+
+    @property
+    def rec(self):
+        """The face recogniser (SFace), loaded – and downloaded – only when a face is compared:
+        "detect faces only" never needs it."""
+        if self._rec is None:
+            self._rec = cv2.FaceRecognizerSF.create(fetch("sface"), "")
+        return self._rec
+
+    @property
+    def recognizer_loaded(self) -> bool:
+        return self._rec is not None
 
     def detect_in_people(self, frame: np.ndarray, persons: List[dict]) -> List[dict]:
         """Search faces in the upper part of each person box (much better than the

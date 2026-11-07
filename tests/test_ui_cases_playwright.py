@@ -113,7 +113,7 @@ def test_officer_investigation_flow(server):
         page.fill("#q-fir", "451/2026")
         page.fill("#q-ps", "Civil Lines")
         page.check("input[name=q-preset][value=fast]")
-        page.uncheck("#q-faces")
+        page.select_option("#q-facemode", "off")            # public cameras: no face analysis at all
         page.uncheck("#q-plates")
         page.dblclick("#q-run")                          # a double click must not start two runs
         expect(page.locator("#tab-progress")).to_be_visible()

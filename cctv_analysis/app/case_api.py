@@ -26,8 +26,9 @@ from typing import Callable, Dict, List, Optional
 from flask import Response, jsonify, request, send_file
 
 from .. import licensing as LIC
-from ..cases import CASE_FIELDS, Case, CaseStore, Source, calibrate, format_offset, parse_offset
+from ..cases import CASE_FIELDS, Case, CaseStore, Source, calibrate, format_offset, parse_offset, reference_photos
 from ..config import VIDEO_EXTENSIONS, Config
+from ..investigation import FACE_MODES, face_options
 from . import features
 from .common import ApiError, abs_dir, inside
 
@@ -441,7 +442,23 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         rid = d.get("request_id", "")
         if not isinstance(rid, str) or len(rid) > 64:
             raise ApiError(400, "request_id must be a short string")
-        return {"preset": preset, "options": options, "sources": sel, "request_id": rid}
+        faces = d.get("faces")
+        if faces is not None and faces not in FACE_MODES:
+            raise ApiError(400, f"faces must be one of {list(FACE_MODES)}")
+        return {"preset": preset, "options": options, "sources": sel, "request_id": rid, "faces": faces}
+
+    def apply_face_mode(c: Case, req: dict) -> None:
+        """The face mode chosen before the run decides every face setting of it (and nothing else
+        can switch face work on): off / detect / unique / reference (the case's reference persons)."""
+        mode = req.get("faces")
+        if mode is None:
+            return
+        refs = ""
+        if mode == "reference":
+            if not c.references():
+                raise ApiError(400, "faces=reference: add the reference persons' photos to the case first")
+            refs = c.references_dir
+        req["options"] = {**req["options"], **face_options(mode, refs)}
 
     def start_run(c: Case, req: dict):
         from ..investigation import run_case
@@ -474,7 +491,9 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
     @app.post("/api/cases/<cid>/run")
     def case_run(cid):
         req = run_request(body())
-        job = start_run(open_case(cid), req)
+        c = open_case(cid)
+        apply_face_mode(c, req)
+        job = start_run(c, req)
         return jsonify(job=job.public()), 202
 
     @app.post("/api/cases/quick")
@@ -499,20 +518,61 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         if len({os.path.realpath(s["path"]) for s in specs}) != len(specs):
             raise ApiError(400, "the same folder was given twice")
         req = run_request(d)
+        refs = d.get("references") or ""
+        if req["faces"] == "reference":
+            if not isinstance(refs, str) or not refs:
+                raise ApiError(400, "faces=reference: references must be the folder of the reference persons' photos")
+            try:
+                reference_photos(refs)                 # checked before anything is created
+            except ValueError as e:
+                raise ApiError(400, f"references: {e}")
         cid = _text(d.get("case_id"), "case_id", 64) or dt.datetime.now().strftime("CASE-%Y%m%d-%H%M%S")
         values = {k: _text(d.get(k), k, 2000) for k in CASE_FIELDS if d.get(k)}
         try:
             c = store().create(cid, user=user(), **values)
             for s in specs:
                 c.add_source(s["path"], s["label"], s["clock_offset"], user=user())
+            if req["faces"] == "reference":
+                c.add_reference_photos(refs, user=user())
         except FileExistsError as e:
             raise ApiError(409, str(e))
         except ValueError as e:
             raise ApiError(400, str(e))
         for s in specs:
             settings.remember("recent_inputs", s["path"])
+        apply_face_mode(c, req)
         job = start_run(c, req)
         return jsonify(case=case_view(c), job=job.public()), 202
+
+    # ------------------------------------------------------------ reference persons (face mode "reference")
+    def references_view(c: Case) -> List[dict]:
+        return [{"name": r["name"], "photos": len(r["photos"]),
+                 "thumb": "references/" + r["name"] + "/" + r["photos"][0]} for r in c.references()]
+
+    @app.get("/api/cases/<cid>/references")
+    def case_references(cid):
+        return jsonify(references=references_view(open_case(cid)))
+
+    @app.post("/api/cases/<cid>/references")
+    def case_references_add(cid):
+        """Copy the photos of a folder (one sub-folder per person, or one photo per person) into
+        the case; their SHA-256 go into the case audit log."""
+        d = body()
+        c = open_case(cid)
+        try:
+            added = c.add_reference_photos(abs_dir(d.get("path", ""), "path"), user=user())
+        except ValueError as e:
+            raise ApiError(400, str(e))
+        return jsonify(added=len(added), references=references_view(c))
+
+    @app.delete("/api/cases/<cid>/references/<name>")
+    def case_references_remove(cid, name):
+        c = open_case(cid)
+        try:
+            c.remove_reference(name, user=user())
+        except KeyError as e:
+            raise ApiError(404, str(e).strip("'\""))
+        return jsonify(references=references_view(c))
 
     # ------------------------------------------------------------ media
     @app.get("/api/cases/<cid>/file")

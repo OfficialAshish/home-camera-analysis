@@ -39,6 +39,44 @@ DEVICE_KINDS = ("DVR", "NVR", "Computer / Storage Media", "Mobile", "Flash Drive
 STORAGE_MEDIA = ("HDD", "SSD", "Pen Drive", "SD Card", "CD/DVD", "Cloud export", "Other", "")
 MAX_OFFSET = 7 * 24 * 3600          # a week: anything larger is a wrong date, not a clock error
 _LOCK = threading.Lock()
+PHOTO_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+MAX_REFERENCE_PHOTOS = 500
+MAX_PHOTO_BYTES = 25 << 20
+
+
+def person_name(text: str) -> str:
+    """A reference person's name as a folder name: what the officer wrote, without characters a
+    file system refuses (any script – Devanagari names stay as they are)."""
+    n = re.sub(r'[\\/:*?"<>|\x00-\x1f]', " ", str(text or "")).strip().strip(".")
+    n = re.sub(r"\s+", " ", n)[:60].strip()
+    if not n:
+        raise ValueError(f"not a usable person name: {text!r}")
+    return n
+
+
+def reference_photos(folder: str) -> List[tuple]:
+    """(person, photo path) of a folder of reference photos: one sub-folder per person
+    (folder/<Name>/*.jpg) or photos directly in it (one person per photo, named by the file).
+    ValueError when there is none, too many or a file is too large."""
+    folder = os.path.abspath(os.path.expanduser(folder or ""))
+    if not os.path.isdir(folder):
+        raise ValueError(f"folder not found: {folder}")
+    items = []
+    for entry in sorted(os.listdir(folder)):
+        p = os.path.join(folder, entry)
+        if os.path.isdir(p):
+            items += [(person_name(entry), os.path.join(p, f)) for f in sorted(os.listdir(p))
+                      if f.lower().endswith(PHOTO_EXT) and os.path.isfile(os.path.join(p, f))]
+        elif entry.lower().endswith(PHOTO_EXT):
+            items.append((person_name(os.path.splitext(entry)[0]), p))
+    if not items:
+        raise ValueError(f"no photos (.jpg, .png) in {folder} or its sub-folders – one sub-folder per person")
+    if len(items) > MAX_REFERENCE_PHOTOS:
+        raise ValueError(f"at most {MAX_REFERENCE_PHOTOS} reference photos")
+    big = [p for _, p in items if os.path.getsize(p) > MAX_PHOTO_BYTES]
+    if big:
+        raise ValueError(f"photo larger than 25 MB: {big[0]}")
+    return items
 
 
 def parse_offset(text) -> float:
@@ -345,6 +383,56 @@ class Case:
 
     def calibrated(self, sid: str, camera: Optional[str], dvr_time: Optional[str]) -> Optional[str]:
         return calibrate(dvr_time, self.source(sid).offset_for(camera))
+
+    # ------------------------------------------------------------- reference persons (face search)
+    @property
+    def references_dir(self) -> str:
+        return os.path.join(self.root, "references")
+
+    def references(self) -> List[dict]:
+        """The reference persons: [{"name", "photos": [file, …]}] (``references/<Name>/``)."""
+        d = self.references_dir
+        out = []
+        for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            p = os.path.join(d, name)
+            photos = sorted(f for f in os.listdir(p) if f.lower().endswith(PHOTO_EXT)) if os.path.isdir(p) else []
+            if photos:
+                out.append({"name": name, "photos": photos})
+        return out
+
+    def add_reference_photos(self, folder: str, user: str = "") -> List[dict]:
+        """Copy reference photos (``reference_photos``) into ``references/<Name>/``. Every copy's
+        SHA-256 and where it came from go into the case audit log: which pictures a face search
+        looked for is part of the record. A photo already there (same content) is not copied twice."""
+        import hashlib
+        import shutil
+        added = []
+        for name, src in reference_photos(folder):
+            with open(src, "rb") as fh:
+                data = fh.read()
+            sha = hashlib.sha256(data).hexdigest()
+            dst_dir = os.path.join(self.references_dir, name)
+            os.makedirs(dst_dir, exist_ok=True)
+            base, ext = os.path.splitext(os.path.basename(src))
+            dst, n = os.path.join(dst_dir, base + ext.lower()), 2
+            while os.path.exists(dst):
+                with open(dst, "rb") as fh:
+                    if hashlib.sha256(fh.read()).hexdigest() == sha:
+                        break
+                dst, n = os.path.join(dst_dir, f"{base}_{n}{ext.lower()}"), n + 1
+            else:
+                shutil.copyfile(src, dst)
+                added.append({"name": name, "photo": os.path.basename(dst), "sha256": sha, "from": src})
+        self.audit.append("reference_photos_added", case_id=self.case_id, folder=os.path.abspath(folder),
+                          photos=added, by=user)
+        return added
+
+    def remove_reference(self, name: str, user: str = "") -> None:
+        import shutil
+        if name not in {r["name"] for r in self.references()}:
+            raise KeyError(f"no reference person {name!r}")
+        shutil.rmtree(os.path.join(self.references_dir, name))
+        self.audit.append("reference_person_removed", case_id=self.case_id, name=name, by=user)
 
 
 def _now() -> str:

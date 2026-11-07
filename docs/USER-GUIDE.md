@@ -21,8 +21,12 @@ the black window into the browser.
    change it later without analysing again.
 3. Optional: FIR number, police station, investigating officer, a case ID (blank = automatic).
 4. **Balanced** suits most laptops; **Fast** for a lot of footage. Keep *Describe-it search* on if
-   you want to search with words ("man in a red helmet"); untick *Faces* or *Number plates* if not
-   needed (each adds time).
+   you want to search with words ("man in a red helmet"); untick *Number plates* if not needed.
+   **Faces** – decide before the run (public cameras): *Off*; *Detect faces only* (face pictures,
+   nobody is compared or grouped); *Unique faces* (repeat faces grouped into persons P0001 …);
+   *Only look for reference persons* – choose a folder with their photos (one sub-folder per
+   person, its name = the person); every face is compared only with these photos and nothing else.
+   The photos are copied into the case and recorded in the audit log.
 5. **Run investigation.** The *Progress* page shows *Source 2 of 4 (Traffic North)*, the stage (first
    the SHA-256 of every seized file, then lossless playback copies, then the analysis) and the time
    left. *Stop* finishes the current step; the next run continues where it stopped.

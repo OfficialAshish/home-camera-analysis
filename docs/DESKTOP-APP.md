@@ -30,7 +30,7 @@ The app opens on **Quick investigation**. Case screens (Drishti-AI, docs/CASES.m
   device folders side by side), then in the user's folders and on every drive; when it is not
   found the page asks for the path (paste, folder browser or the system dialog). A clock
   correction per folder, optional FIR / police station / officer, *Balanced* or *Fast*,
-  describe-it search / faces / plates, **Run investigation**: one request creates the case, adds
+  describe-it search / plates, the face mode (off / detect only / unique faces / only reference persons with their photos – docs/CASES.md), **Run investigation**: one request creates the case, adds
   every folder and starts the run (everything is validated first; nothing is created on error).
 * **Cases** – list, new case, case details, one card per source (label, folder, availability,
   clock and per-camera corrections, status: files hashed, events, person tracks, playback copies,

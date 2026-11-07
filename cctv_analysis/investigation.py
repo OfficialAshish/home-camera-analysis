@@ -21,6 +21,26 @@ from .config import PRESETS, Config
 log = logging.getLogger("cctv")
 
 
+# What the face analysis of a case run does – chosen before the run (public cameras: often only
+# the reference persons may be searched for). The only place these modes are defined.
+FACE_MODES = {
+    "off": "no face analysis",
+    "detect": "detect faces and keep the face pictures; no face is compared or grouped",
+    "unique": "detect faces and group repeat faces into persons (P0001, …)",
+    "reference": "detect faces and compare them only with the reference persons' photos",
+}
+
+
+def face_options(mode: str, references_dir: str = "") -> dict:
+    """The Config fields of a face mode (FACE_MODES)."""
+    if mode not in FACE_MODES:
+        raise ValueError(f"faces must be one of {list(FACE_MODES)}")
+    if mode == "reference" and not references_dir:
+        raise ValueError("faces=reference needs the reference persons' photos")
+    return {"use_faces": mode != "off", "face_identities": mode == "unique",
+            "face_watchlist_dir": references_dir if mode == "reference" else "", "known_faces_dir": ""}
+
+
 def run_options(options: Optional[dict] = None, preset: str = "balanced") -> dict:
     """The analysis options of a case run merged over the preset, validated (ValueError or
     TypeError name the problem) – before anything is created or started."""

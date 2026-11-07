@@ -65,6 +65,7 @@ function renderCase() {
   clear($("cs-fields"), CASE_FIELDS.map(([k, label]) => el("label", { class: k === "notes" ? "wide" : null }, label,
     el("input", { id: "cf-" + k, value: c[k] || "" }))));
   clear($("cs-sources"), c.sources.length ? c.sources.map(sourceCard) : el("p", { class: "hint", text: "No sources yet – add the seized folders." }));
+  if ($("cs-facemode").value === "reference") loadReferences();
 }
 function sourceCard(s) {
   const st = s.status;
@@ -162,14 +163,34 @@ $("cs-root-change").addEventListener("click", () => openBrowser(null, true, asyn
   catch (e) { toast(e.message, true); }
 }));
 function runOptions(prefix) {
-  return { use_semantic: $(prefix + "-semantic").checked, use_faces: $(prefix + "-faces").checked, face_identities: $(prefix + "-faces").checked,
-           use_plates: $(prefix + "-plates").checked };
+  return { use_semantic: $(prefix + "-semantic").checked, use_plates: $(prefix + "-plates").checked };
 }
+// the face mode is chosen before a run and decides all face work of it (server: investigation.FACE_MODES)
+$("q-facemode").addEventListener("change", (e) => $("q-refs-row").classList.toggle("hidden", e.target.value !== "reference"));
+$("q-refs-pick").addEventListener("click", () => openBrowser($("q-refs"), false));
+$("cs-facemode").addEventListener("change", (e) => { $("cs-refs-box").classList.toggle("hidden", e.target.value !== "reference"); if (e.target.value === "reference") loadReferences(); });
+async function loadReferences() {
+  if (!C.id) return;
+  try {
+    const r = await api("GET", caseApi("/references"));
+    clear($("cs-refs"), r.references.length ? r.references.map(x => el("div", { class: "tile", "data-person": x.name },
+      el("img", { src: caseFile(x.thumb), alt: "" }), el("b", { text: x.name }), el("div", { class: "small", text: `${x.photos} photo(s)` }),
+      el("button", { type: "button", class: "danger", text: "Remove", onclick: async () => {
+        if (!confirm(`Remove ${x.name} from the reference persons? (recorded in the audit log)`)) return;
+        try { await api("DELETE", caseApi("/references/" + encodeURIComponent(x.name))); loadReferences(); } catch (e) { toast(e.message, true); } } }))) :
+      el("p", { class: "hint", text: "No reference persons yet: add a folder of their photos." }));
+  } catch (e) { toast(e.message, true); }
+}
+$("cs-refs-add").addEventListener("click", () => { if (needCase()) openBrowser(null, false, async (p) => {
+  try { const r = await api("POST", caseApi("/references"), { path: p }); toast(`${r.added} photo(s) added – SHA-256 recorded in the audit log.`); loadReferences(); }
+  catch (e) { toast(e.message, true); }
+}); });
 function watchRun(job) { S.job = job; showTab("progress"); pollJob(); }
 $("cs-run").addEventListener("click", async (ev) => {
   if (!needCase()) return;
   busy(ev.target, true);
-  try { const r = await api("POST", caseApi("/run"), { preset: $("cs-preset").value, options: runOptions("cs"), request_id: rid() }); watchRun(r.job); }
+  try { const r = await api("POST", caseApi("/run"), { preset: $("cs-preset").value, options: { ...runOptions("cs"), reprocess: $("cs-reprocess").checked },
+    faces: $("cs-facemode").value, request_id: rid() }); watchRun(r.job); }
   catch (e) { if (e.status === 409 && e.data.job) { watchRun(e.data.job); toast("An analysis is already running."); } else toast(e.message, true); }
   finally { busy(ev.target, false); }
 });
@@ -286,7 +307,7 @@ $("q-run").addEventListener("click", async (ev) => {
     const r = await api("POST", "/api/cases/quick", { folders: C.qFolders.map(f => ({ path: f.path, label: f.label.trim(), clock_offset: f.clock_offset.trim() || "0" })),
       case_id: $("q-cid").value.trim(), fir_number: $("q-fir").value.trim(), police_station: $("q-ps").value.trim(),
       investigating_officer: $("q-io").value.trim(), preset: document.querySelector("input[name=q-preset]:checked").value,
-      options: runOptions("q"), request_id: rid() });
+      options: runOptions("q"), faces: $("q-facemode").value, references: $("q-refs").value.trim() || undefined, request_id: rid() });
     C.qFolders = []; renderQuick();
     await loadCases(); await selectCase(r.case.case_id);
     watchRun(r.job);
@@ -371,13 +392,15 @@ async function openCaseEvent(sid, eid) {
     e.flags.length ? el("ul", {}, e.flags.map(f => el("li", {}, el("b", { text: f.flag }), ` (+${f.points}) ${f.reason}`))) : null,
     people.length ? el("div", {}, el("h3", { text: "People and vehicles in this event" }), el("div", { class: "grid" }, people.map(t => el("div", { class: "tile", "data-track": String(t.track) },
       t.person ? el("img", { src: caseFile(t.person), alt: "" }) : null, t.face ? el("img", { src: caseFile(t.face), alt: "" }) : null,
-      el("div", { text: `${t.cls} #${t.track}${t.identity ? " · " + t.identity : ""}` }),
+      el("div", { text: `${t.cls} #${t.track}${t.identity ? " · " + t.identity : ""}${t.watchlist ? " · matches reference " + t.watchlist : ""}` }),
       el("div", { class: "row center" }, t.cls === "person" ? [
         el("button", { type: "button", class: "fx-open", text: "Enhance face", title: "Forensic Studio: the head region, super-resolution from several frames", onclick: () => openStudioAt(e, "face", t.track) }),
         el("button", { type: "button", class: "fx-open", text: "Enhance person", title: "Forensic Studio: this person's region", onclick: () => openStudioAt(e, "person", t.track) })] :
         el("button", { type: "button", class: "fx-open", text: `Enhance ${t.cls}`, title: "Forensic Studio: this vehicle's region", onclick: () => openStudioAt(e, "vehicle", t.track) })),
       t.person && t.cls === "person" ? el("button", { type: "button", class: "primary", text: "Find this person on all cameras",
         onclick: () => runSightings({ kind: "appearance", min_score: 0.7, query: { source_id: sid, event_id: eid, track: t.track } }, `Person #${t.track} of ${e.source_label}/${e.camera}`) }) : null,
+      t.watchlist ? el("button", { type: "button", class: "primary", text: `Find ${t.watchlist} on all cameras`, title: "reference person: every track whose face matched the reference photos",
+        onclick: () => runSightings({ kind: "face", value: t.watchlist }, `Reference person ${t.watchlist}`) }) : null,
       t.identity_id ? el("button", { type: "button", text: `Follow face ${t.identity}`,
         onclick: () => runSightings(/^P\d{4,}$/.test(t.identity) ? { kind: "face", value: t.identity_id, query: { source_id: sid } } : { kind: "face", value: t.identity }, `Face ${t.identity}`) }) : null)))) : null,
     e.plates.length ? el("div", {}, el("h3", { text: "Number plates" }), el("div", { class: "grid" }, e.plates.map(p =>

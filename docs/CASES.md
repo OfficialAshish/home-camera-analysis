@@ -24,6 +24,7 @@ designation, place). Every edit is audited with the old and new values.
       ingest.json         acquisition record (below)
       playback/           lossless MP4 copies for the browser
       appearance_index.npz  person appearance vectors (docs/REID.md)
+  references/<Name>/      reference persons' photos for face mode "reference" (copies; SHA-256 in the audit log)
   enhancements/           Forensic Studio outputs + filter logs (docs/FORENSIC-STUDIO.md)
   exports/                evidence bundles with the Section 63 certificate (docs/EVIDENCE.md)
 ```
@@ -46,7 +47,29 @@ For each source in turn (one heavy analysis at a time – what an 8 GB laptop su
    of events analysed earlier with scene search off – so it can be turned on later without
    analysing the videos again (`test_describe_it_search_can_be_turned_on_later_without_analysing_again`).
 
-The run can be cancelled between sources, files and events; finished videos are skipped next time.
+The run can be cancelled between sources, files and events; finished videos are skipped next time
+(*analyse again what was already analysed* = `reprocess`, after changing settings).
+
+## Face mode (chosen before a run)
+Public cameras: what may be done with faces is decided before the run. The request's `faces`
+(`investigation.FACE_MODES`, mapped to Config by `investigation.face_options` – the only place)
+sets every face option of the run, whatever else the options say:
+
+| `faces` | Config | Work done |
+|---|---|---|
+| `off` | `use_faces=false` | no face model is loaded; people are still detected and tracked |
+| `detect` | `use_faces`, `face_identities=false` | faces are detected and their pictures kept; the recogniser (SFace) is never loaded, no face is compared or grouped |
+| `unique` | `use_faces`, `face_identities` | repeat faces are grouped into persons P0001 … (the default) |
+| `reference` | `use_faces`, `face_identities=false`, `face_watchlist_dir=<case>/references` | every face is compared only with the reference persons' photos; a match marks the track with that person (`tracks.watchlist`, flag `watchlist_face`); nobody else is identified or grouped |
+
+Reference photos: one sub-folder per person (`Ramesh Kumar/photo1.jpg …`) or one photo per person
+(the file name is the person). They are copied into `references/<Name>/` (a photo already there
+with the same content is not copied twice) and every copy's SHA-256 and origin go into the case
+audit log (`reference_photos_added`; removal: `reference_person_removed`). Sightings of a
+reference person: `sightings(kind="face", value="<Name>")`. Measured in `tests/test_face_modes.py`
+on a clip with two real faces: `off` creates no face engine, `detect` stores face pictures with no
+embedding computed and SFace not loaded, `unique` groups them into two persons, `reference` marks
+only the reference person and groups nobody.
 
 ## Clock calibration
 `parse_offset` accepts what an officer types: `-00:11:00`, `+1:05:30`, `-11:00`, `-11m`, `+2h`,
@@ -104,11 +127,12 @@ never limited. A source left out says so (`skipped`).
 | Method and path | Purpose |
 |---|---|
 | `GET /api/cases` · `POST /api/cases` | list (and the cases folder) · create |
-| `POST /api/cases/quick` | Quick investigation: folders + details → case, sources, run (all validated first) |
+| `POST /api/cases/quick` | Quick investigation: folders + details (+ `faces`, `references` folder) → case, sources, reference photos, run (all validated first) |
 | `GET/PUT /api/cases/<id>` | case with per-source status · edit details, `expert` (Part B) |
 | `POST /api/cases/<id>/sources` · `PUT/DELETE …/sources/<sid>` | add · edit label, offsets, device, Part A declarant, location · remove |
 | `POST …/sources/<sid>/relink` | job: verify and relink a moved source |
-| `POST /api/cases/<id>/run` | job: ingest + analyse + index every (or the chosen) source |
+| `POST /api/cases/<id>/run` | job: ingest + analyse + index every (or the chosen) source; `faces` = face mode |
+| `GET/POST …/references` · `DELETE …/references/<name>` | reference persons: list · add the photos of a folder · remove |
 | `GET …/timeline` · `GET …/events/<sid>/<eid>` | cross-camera timeline · one event with both times |
 | `POST …/sightings` · `GET …/people` · `POST …/text-search` | sightings + journey · people by clothing colour · describe-it search |
 | `GET …/video` · `GET …/frame` · `GET …/file` | recording (playback copy) · original frame (PNG) · a file of the case |

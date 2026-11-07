@@ -121,13 +121,60 @@ def test_quick_investigation_checks_every_folder_before_creating_anything(env, c
            ({"folders": [str(s / "ShopA_DVR"), str(s / "missing")]}, "folder not found"),
            ({"folders": [{"path": str(s / "ShopA_DVR"), "clock_offset": "eleven minutes"}]}, "clock offset"),
            ({"folders": []}, "1-50 folders"),
-           ({"folders": [str(s / "ShopA_DVR")], "preset": "turbo"}, "preset")]
+           ({"folders": [str(s / "ShopA_DVR")], "preset": "turbo"}, "preset"),
+           ({"folders": [str(s / "ShopA_DVR")], "faces": "everything"}, "faces must be one of"),
+           ({"folders": [str(s / "ShopA_DVR")], "faces": "reference"}, "reference persons' photos"),
+           ({"folders": [str(s / "ShopA_DVR")], "faces": "reference", "references": str(s / "ShopA_DVR")},
+            "no photos")]
     for b, msg in bad:
         r = c.post("/api/cases/quick", json={**b, "case_id": "SHOULD-NOT-EXIST"}, headers=H())
         assert r.status_code == 400 and msg in r.get_json()["error"], (b, r.get_json())
     r = c.post("/api/cases/quick", json={"case_id": CID, "folders": [str(s / "ShopA_DVR")]}, headers=H())
     assert r.status_code == 409                                                            # case id taken
     assert c.get("/api/cases", headers=H()).get_json()["cases"] == before
+
+
+def test_the_face_mode_decides_the_face_settings_of_a_run(env, case, monkeypatch):
+    """The face mode chosen before a run sets every face option of it (whatever the options say);
+    'reference' needs the case's reference persons (copied in, hashed into the audit log)."""
+    import cctv_analysis.investigation as INV
+    c, tmp = env["c"], env["tmp"]
+    seen = []
+
+    def fake_run_case(case_, options, preset, *a, **k):
+        seen.append(dict(options))
+        return {"cancelled": False, "sources": {}}
+    monkeypatch.setattr(INV, "run_case", fake_run_case)
+    sneaky = {**OPTIONS, "use_faces": True, "face_identities": True, "face_watchlist_dir": "/elsewhere"}
+    for mode, want in (("off", (False, False, "")), ("detect", (True, False, "")), ("unique", (True, True, ""))):
+        r = c.post(f"/api/cases/{CID}/run", json={"preset": "fast", "options": sneaky, "faces": mode,
+                                                  "request_id": "fm-" + mode}, headers=H())
+        assert r.status_code == 202, r.get_json()
+        assert wait(c, r.get_json()["job"]["id"])["status"] == "done"
+        o = seen[-1]
+        assert (o["use_faces"], o["face_identities"], o["face_watchlist_dir"]) == want, (mode, o)
+    r = c.post(f"/api/cases/{CID}/run", json={"preset": "fast", "options": OPTIONS, "faces": "reference"}, headers=H())
+    assert r.status_code == 400 and "reference persons" in r.get_json()["error"]
+    photos = tmp / "ref_photos"
+    photos.mkdir(exist_ok=True)
+    cv2.imwrite(str(photos / "Asha Devi.jpg"), np.full((80, 60, 3), 128, np.uint8))
+    a = c.post(f"/api/cases/{CID}/references", json={"path": str(photos)}, headers=H())
+    assert a.status_code == 200 and a.get_json()["added"] == 1, a.get_json()
+    refs = c.get(f"/api/cases/{CID}/references", headers=H()).get_json()["references"]
+    assert [(x["name"], x["photos"]) for x in refs] == [("Asha Devi", 1)]
+    assert c.get(f"/api/cases/{CID}/file", query_string={"p": refs[0]["thumb"]}, headers=H()).status_code == 200
+    r = c.post(f"/api/cases/{CID}/run", json={"preset": "fast", "options": sneaky, "faces": "reference",
+                                              "request_id": "fm-ref"}, headers=H())
+    assert r.status_code == 202 and wait(c, r.get_json()["job"]["id"])["status"] == "done"
+    o = seen[-1]
+    assert (o["use_faces"], o["face_identities"]) == (True, False) and o["face_watchlist_dir"].endswith("references")
+    audit = c.get(f"/api/cases/{CID}/audit", headers=H()).get_json()["entries"]
+    e = next(x for x in reversed(audit) if x["action"] == "reference_photos_added")["details"]
+    assert e["photos"][0]["name"] == "Asha Devi" and len(e["photos"][0]["sha256"]) == 64
+    assert c.post(f"/api/cases/{CID}/references", json={"path": str(tmp / "nothing")}, headers=H()).status_code == 400
+    assert c.delete(f"/api/cases/{CID}/references/Asha%20Devi", headers=H()).status_code == 200
+    assert c.delete(f"/api/cases/{CID}/references/Asha%20Devi", headers=H()).status_code == 404
+    assert c.get(f"/api/cases/{CID}/references", headers=H()).get_json()["references"] == []
 
 
 def test_the_run_analysed_and_indexed_every_source(env, case):

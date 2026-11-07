@@ -200,8 +200,10 @@ def sightings(case: Case, kind: str, value: str = "", query: Optional[dict] = No
                 if kind == "face":
                     sql = ("SELECT t.event_id, t.track, t.first_dt, t.first_off, t.duration, t.person_crop, t.face_crop, "
                            "t.identity, e.camera, e.rel_path, e.start_off FROM tracks t JOIN events e USING(event_id) ")
-                    if by_name:
-                        rows = db.execute(sql + "WHERE t.known_name=?", (v,)).fetchall()
+                    if by_name:                      # enrolled (known faces) or a reference person (watchlist)
+                        wl = "watchlist" in {c[1] for c in db.execute("PRAGMA table_info(tracks)")}
+                        rows = db.execute(sql + ("WHERE t.known_name=? OR t.watchlist=?" if wl else
+                                                 "WHERE t.known_name=?"), (v, v) if wl else (v,)).fetchall()
                         sims: Dict[str, float] = {}
                     else:
                         sims = matched.get(s["source_id"], {})

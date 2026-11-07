@@ -64,9 +64,21 @@
       </div>
       <div class="row">
         <label class="inline"><input type="checkbox" id="q-semantic" checked> Describe-it search (“man in a red helmet”)</label>
-        <label class="inline"><input type="checkbox" id="q-faces" checked> Faces</label>
         <label class="inline"><input type="checkbox" id="q-plates" checked> Number plates</label>
       </div>
+      <div class="row">
+        <label class="inline">Faces <select id="q-facemode" class="facemode">
+          <option value="off">Off – no face analysis</option>
+          <option value="detect">Detect faces only (no comparing, no grouping)</option>
+          <option value="unique" selected>Unique faces (group repeat faces into persons)</option>
+          <option value="reference">Only look for reference persons (their photos)</option>
+        </select></label>
+      </div>
+      <div id="q-refs-row" class="row hidden">
+        <label class="inline grow">Reference photos folder <input id="q-refs" class="mono grow" placeholder="one sub-folder per person (Ramesh Kumar\photo1.jpg …), or one photo per person"></label>
+        <button id="q-refs-pick" type="button">Choose…</button>
+      </div>
+      <p class="hint">Public cameras: choose what may be done with faces before the run. <i>Only look for reference persons</i> compares every face with the photos you give and nothing else – no other face is identified or grouped; the photos are copied into the case and their SHA-256 recorded.</p>
       <div class="row"><button id="q-run" class="primary big">▶ Run investigation</button><span id="q-msg" class="hint"></span></div>
     </div>
   </section>
@@ -101,9 +113,21 @@
       <div class="row">
         <select id="cs-preset"><option value="balanced">Balanced (recommended)</option><option value="fast">Fast</option><option value="accurate">Accurate (slow)</option></select>
         <label class="inline"><input type="checkbox" id="cs-semantic" checked> Describe-it search</label>
-        <label class="inline"><input type="checkbox" id="cs-faces" checked> Faces</label>
         <label class="inline"><input type="checkbox" id="cs-plates" checked> Number plates</label>
+        <label class="inline">Faces <select id="cs-facemode" class="facemode">
+          <option value="off">Off – no face analysis</option>
+          <option value="detect">Detect faces only (no comparing, no grouping)</option>
+          <option value="unique" selected>Unique faces (group repeat faces into persons)</option>
+          <option value="reference">Only look for reference persons (their photos)</option>
+        </select></label>
+        <label class="inline" title="Already analysed recordings are skipped unless this is ticked – tick it after changing the face mode or the other settings"><input type="checkbox" id="cs-reprocess"> analyse again what was already analysed</label>
         <button id="cs-run" class="primary" type="button">▶ Analyse all sources</button>
+      </div>
+      <div id="cs-refs-box" class="hidden">
+        <h3>Reference persons</h3>
+        <div id="cs-refs" class="grid"></div>
+        <div class="row"><button id="cs-refs-add" type="button">Add photos from a folder…</button>
+          <span class="hint">one sub-folder per person (its name = the person), or one photo per person (the file name = the person)</span></div>
       </div>
       <h3>Audit log</h3>
       <button id="cs-audit" type="button">Show audit log</button><div id="cs-audit-out"></div>
