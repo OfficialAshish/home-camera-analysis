@@ -89,6 +89,14 @@ jobs:
           set RC=%ERRORLEVEL%
           type launcher-install.log
           exit /b %RC%
+      - name: The Windows folder dialog opens on screen and returns the chosen folder (UI Automation)
+        shell: cmd
+        run: |
+          .venv\Scripts\python.exe -m pip install -q pytest
+          .venv\Scripts\python.exe -m pytest -q -p no:cacheprovider -s tests/test_native_dialog_windows.py > dialog-test.log 2>&1
+          set RC=%ERRORLEVEL%
+          type dialog-test.log
+          exit /b %RC%
       - name: Post the launcher evidence on the pull request
         if: always() && github.event_name == 'push'
         shell: bash
@@ -103,6 +111,7 @@ jobs:
             grep -E "^ Installing|Successfully installed" launcher-install.log 2>/dev/null | cut -c1-300 | tail -n 3
             tail -n 2 launcher-install.log 2>/dev/null | cut -c1-900
             .venv/Scripts/python.exe -c "import sys, torch, cctv_analysis; print('venv', sys.version.split()[0], 'torch', torch.__version__, 'app', cctv_analysis.__version__)" 2>&1 || echo "no .venv"
+            echo "Windows folder dialog test:"; grep -E "FOUND|NOT FOUND|passed|failed|Error" dialog-test.log 2>/dev/null | tail -n 5
             echo '```'
           } > launcher.md
           gh pr comment "${GITHUB_REF_NAME}" --body-file launcher.md || echo "no open pull request for this branch"

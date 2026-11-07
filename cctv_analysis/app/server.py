@@ -346,18 +346,35 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
 
     @app.post("/api/fs/pick")
     def fs_pick():
-        """Native folder dialog via a helper process (tkinter). 501 when not available."""
+        """System folder dialog in a helper process (Windows: the Windows folder dialog; elsewhere
+        tkinter). Answers when the officer has chosen or cancelled: {"path": "" when cancelled}.
+        501 when this computer cannot show one (the UI then opens the built-in folder browser)."""
+        d = request.get_json(silent=True) or {}
+        title = str(d.get("title") or "Choose a folder")[:120]
+        start = str(d.get("start") or "")[:500]
         if not native_dialog():
             raise ApiError(501, "folder dialog not available – use the folder browser")
-        args = [sys.executable, "--pick-folder"] if getattr(sys, "frozen", False) else \
-            [sys.executable, "-m", "cctv_analysis.app", "--pick-folder"]
+        args = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, "-m", "cctv_analysis.app"]
+        args += ["--pick-folder", "--pick-title", title, "--pick-start", start]
+        pkg_parent = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        env = {**os.environ, "PYTHONPATH": pkg_parent + os.pathsep + os.environ.get("PYTHONPATH", ""),
+               "PYTHONIOENCODING": "utf-8"}
         try:
-            r = subprocess.run(args, capture_output=True, text=True, timeout=120)
-        except Exception:
+            r = subprocess.run(args, capture_output=True, timeout=3600, env=env)
+        except subprocess.TimeoutExpired:
+            return jsonify(path="", note="the folder dialog was left open for an hour and closed")
+        except OSError as e:
+            log.warning("folder dialog helper could not start: %s", e)
             raise ApiError(501, "folder dialog not available – use the folder browser")
         if r.returncode == 3:
             raise ApiError(501, "folder dialog not available – use the folder browser")
-        return jsonify(path=r.stdout.strip())
+        if r.returncode != 0:
+            log.warning("folder dialog helper failed (%s): %s", r.returncode, r.stderr.decode("utf-8", "replace")[-300:])
+            raise ApiError(502, "the folder dialog failed – use the folder browser (details in the app log)")
+        path = r.stdout.decode("utf-8", "replace").strip()
+        if path and not os.path.isdir(path):
+            raise ApiError(502, f"the folder dialog returned a path that is not a folder: {path}")
+        return jsonify(path=path)
 
     # ------------------------------------------------------ config & jobs
     def build_config(d: dict) -> Config:

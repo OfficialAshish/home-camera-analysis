@@ -12,8 +12,10 @@ the black window into the browser.
 # Part A – investigating officers
 
 ## A1. Quick investigation (the first screen)
-1. **Drop the seized folders** on the page – one folder per DVR/NVR/pen drive – or click *Add
-   folder…*. Each folder becomes a row. Nothing is ever written into these folders.
+1. **Drop the seized folders** on the page – one folder per DVR/NVR/pen drive – or click *Choose
+   folder…* (the app's folder browser) or *Windows folder dialog…*. Each folder becomes a row.
+   Nothing is ever written into these folders. If the app cannot find where a dropped folder is,
+   it asks you to paste its path (in Windows Explorer: click the address bar, copy).
 2. **Clock correction** per folder: if the DVR showed 21:25 when the true time was 21:14, type
    `-00:11:00` (DVR 11 minutes fast). `+00:05:00` = DVR 5 minutes slow. Leave `0` if unknown; you can
    change it later without analysing again.

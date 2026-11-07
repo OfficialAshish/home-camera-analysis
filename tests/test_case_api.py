@@ -469,6 +469,23 @@ def test_a_dropped_folder_is_located_by_its_files(env, case):
         assert c.post("/api/fs/locate", json=bad, headers=H()).status_code == 400, bad
 
 
+def test_a_dropped_sibling_of_a_folder_used_before_is_found(tmp_path):
+    """Seized drives hold several device folders side by side: after one was added (recent), a
+    dropped sibling must be found next to it – the parent of a recent folder is searched first.
+    Found by content only: no files, no match."""
+    from cctv_analysis.app.case_api import locate_folder, search_roots
+    drive = tmp_path / "E_drive"
+    (drive / "ShopA_DVR").mkdir(parents=True)
+    (drive / "Mall_NVR" / "ch01").mkdir(parents=True)
+    (drive / "Mall_NVR" / "ch01" / "rec.mp4").write_bytes(b"x" * 1234)
+    roots = search_roots([str(drive / "ShopA_DVR")])
+    assert roots[:2] == [str(drive), str(drive / "ShopA_DVR")]
+    want = [{"rel": "ch01/rec.mp4", "size": 1234}]
+    assert locate_folder("Mall_NVR", want, roots) == [str(drive / "Mall_NVR")]
+    assert locate_folder("Mall_NVR", [], roots) == []
+    assert locate_folder("Mall_NVR", [{"rel": "ch01/rec.mp4", "size": 99}], roots) == []
+
+
 def test_the_cases_folder_can_move_to_another_disk(env, case):
     c, tmp = env["c"], env["tmp"]
     default = c.get("/api/cases", headers=H()).get_json()["root"]

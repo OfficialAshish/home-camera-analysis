@@ -11,37 +11,46 @@ import threading
 import time
 import webbrowser
 
+WIN_PICKER = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+# an invisible, top-most owner window: a dialog started by a background process would otherwise
+# open behind the browser (Windows does not let background processes take the foreground)
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true; $owner.ShowInTaskbar = $false; $owner.Opacity = 0
+$owner.FormBorderStyle = 'None'; $owner.StartPosition = 'CenterScreen'
+$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Show(); $owner.Activate(); $owner.BringToFront()
+$dlg = New-Object System.Windows.Forms.FolderBrowserDialog
+$dlg.Description = $env:DRISHTI_PICK_TITLE
+$dlg.ShowNewFolderButton = $true
+if ($env:DRISHTI_PICK_START -and (Test-Path -LiteralPath $env:DRISHTI_PICK_START)) { $dlg.SelectedPath = $env:DRISHTI_PICK_START }
+$res = $dlg.ShowDialog($owner)
+$owner.Close()
+if ($res -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dlg.SelectedPath) }
+"""
 
-def pick_folder() -> int:
-    """Helper mode for the native folder dialog (exit 3 = no GUI toolkit available)."""
+
+def pick_folder(title: str = "Choose a folder", start: str = "") -> int:
+    """Helper mode for the system folder dialog: prints the chosen folder ('' = cancelled).
+    Exit 3 = no dialog can be shown here. Windows: the Windows folder dialog through PowerShell
+    (no tkinter needed, works in the packaged app); elsewhere tkinter."""
     if sys.platform.startswith("win"):
-        try:
-            import subprocess
-            ps = (
-                "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); "
-                "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog; "
-                "$dlg.Description = 'Select CCTV Recordings Folder'; "
-                "$dlg.ShowNewFolderButton = $true; "
-                "$form = New-Object System.Windows.Forms.Form; "
-                "$form.TopMost = $true; $form.Width = 1; $form.Height = 1; "
-                "$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen; "
-                "$form.ShowInTaskbar = $false; "
-                "$form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized; "
-                "$form.Show(); $form.BringToFront(); $form.Activate(); "
-                "$res = $dlg.ShowDialog($form); "
-                "$form.Close(); "
-                "if ($res -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dlg.SelectedPath) }"
-            )
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-                capture_output=True, text=True, timeout=120
-            )
+        import subprocess
+        env = {**os.environ, "DRISHTI_PICK_TITLE": title, "DRISHTI_PICK_START": start}
+        try:                 # title and start folder travel as environment variables: no quoting problems
+            r = subprocess.run(["powershell.exe", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-Command", WIN_PICKER],
+                               capture_output=True, env=env, timeout=3600)
             if r.returncode == 0:
-                print(r.stdout.strip())
+                sys.stdout.buffer.write(r.stdout.strip() + b"\n")
+                sys.stdout.flush()
                 return 0
-        except Exception:
-            pass
-
+            sys.stderr.write(r.stderr.decode("utf-8", "replace")[-500:])
+        except (OSError, subprocess.TimeoutExpired) as e:
+            sys.stderr.write(f"powershell folder dialog failed: {e}\n")
     try:
         import tkinter
         from tkinter import filedialog
@@ -49,18 +58,14 @@ def pick_folder() -> int:
         return 3
     try:
         root = tkinter.Tk()
-        root.geometry("0x0+0+0")
-        root.overrideredirect(True)
-        root.deiconify()
-        root.lift()
-        root.focus_force()
+        root.withdraw()
         root.attributes("-topmost", True)
         root.update()
-        path = filedialog.askdirectory(parent=root, title="Select CCTV Recordings Folder")
+        path = filedialog.askdirectory(parent=root, title=title, initialdir=start or None, mustexist=True)
         root.destroy()
     except Exception:
         return 3
-    print(path or "")
+    sys.stdout.buffer.write((path or "").encode("utf-8") + b"\n")
     return 0
 
 
@@ -172,10 +177,12 @@ def main(argv=None):
     ap.add_argument("--no-browser", action="store_true")
     ap.add_argument("--data-dir", default=None)
     ap.add_argument("--pick-folder", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--pick-title", default="Choose a folder", help=argparse.SUPPRESS)
+    ap.add_argument("--pick-start", default="", help=argparse.SUPPRESS)
     ap.add_argument("--self-test", action="store_true", help="check the installation and exit")
     a = ap.parse_args(argv)
     if a.pick_folder:
-        sys.exit(pick_folder())
+        sys.exit(pick_folder(a.pick_title, a.pick_start))
     bundled_tools()
     if a.self_test:
         sys.exit(self_test(a.data_dir))

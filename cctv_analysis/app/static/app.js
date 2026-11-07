@@ -550,10 +550,18 @@ $("fb-ok").addEventListener("click", () => {
   const p = $("fb-path").value; $("fb").classList.add("hidden");
   if (S.fbTarget) S.fbTarget.value = p; if (S.fbCb) S.fbCb(p);
 });
+// the system folder dialog (on Windows the Windows folder dialog), opened by the app on this PC:
+// the chosen folder, or "" when cancelled. Throws (status 501) where no dialog can be shown.
+async function systemFolderDialog(title, start) {
+  toast("The folder dialog is open – if you do not see it, it is behind the browser window.");
+  const r = await api("POST", "/api/fs/pick", { title: title || "Choose a folder", start: start || "" });
+  return r.path || "";
+}
 $("fb-native").addEventListener("click", async () => {
-  toast("Opening Windows File Explorer…");
-  try { const r = await api("POST", "/api/fs/pick", {}); if (r.path) { $("fb").classList.add("hidden"); if (S.fbTarget) S.fbTarget.value = r.path; if (S.fbCb) S.fbCb(r.path); } }
-  catch (e) { toast(e.message, true); $("fb-native").disabled = e.status === 501; }
+  try {
+    const p = await systemFolderDialog("Choose a folder", $("fb-path").value);
+    if (p) { $("fb").classList.add("hidden"); if (S.fbTarget) S.fbTarget.value = p; if (S.fbCb) S.fbCb(p); }
+  } catch (e) { toast(e.message, true); if (e.status === 501) $("fb-native").classList.add("hidden"); }
 });
 
 // ---------------------------------------------------------------------- boot

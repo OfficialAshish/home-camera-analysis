@@ -184,45 +184,36 @@ $("cs-audit").addEventListener("click", async () => {
 });
 
 // ------------------------------------------------------------------ folders: picker, drag & drop
-async function pickFolder(cb) {
-  openBrowser(null, false, cb);
-}
-async function pickNativeFolder(cb) {
-  toast("Opening Windows File Explorer…");
-  try {
-    const r = await api("POST", "/api/fs/pick", {});
-    if (r.path) { cb(r.path); toast("Added folder: " + r.path); }
-  } catch (e) {
-    toast(e.message || "File Explorer dialog not available – opening folder browser", true);
-    openBrowser(null, false, cb);
+async function nativeDialogAvailable() {
+  if (C.nativeDialog === undefined) {
+    try { C.nativeDialog = (await api("GET", "/api/fs/roots")).native_dialog; } catch (_) { C.nativeDialog = false; }
   }
+  return C.nativeDialog;
 }
-function promptFolderLocation(name, add) {
-  const existing = document.querySelector(".card.choose-drop");
+async function pickNativeFolder(cb, title) {
+  if (!(await nativeDialogAvailable())) { openBrowser(null, false, cb); return; }
+  try {
+    const p = await systemFolderDialog(title || "Choose the seized recordings folder");
+    if (p) cb(p); else toast("No folder chosen.");
+  } catch (e) { toast(e.message, true); openBrowser(null, false, cb); }
+}
+function promptFolderLocation(name, add, zone) {
+  const existing = document.querySelector(".choose-drop");
   if (existing) existing.remove();
-  const box = el("div", { class: "card choose choose-drop", style: "border: 2px solid #2563eb; background: #eff6ff; padding: 12px; margin: 10px 0; border-radius: 8px;" },
-    el("b", { style: "color: #1e3a8a; font-size: 1.05em;", text: `📁 Dropped folder: “${name}”` }),
-    el("p", { class: "small", style: "color: #475569; margin: 6px 0;", text: "Browser security blocks web pages from reading full drive paths directly. Confirm or paste the path on your PC, or click Browse:" }),
-    el("div", { class: "row", style: "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;" },
-      el("input", { id: "p-drop-path", type: "text", style: "flex: 1; min-width: 260px; padding: 6px 8px;", placeholder: "e.g. C:\\Recordings\\" + name, value: "" }),
+  const inp = el("input", { type: "text", class: "drop-path", placeholder: "e.g. D:\\Seized\\" + name });
+  const box = el("div", { class: "card choose choose-drop" },
+    el("b", { text: `Dropped folder: “${name}”` }),
+    el("p", { class: "small", text: "The browser does not tell the app where a dropped folder is, and it was not found by its files near the folders used before. Paste its path, or choose it:" }),
+    el("div", { class: "row" }, inp,
       el("button", { type: "button", class: "primary", text: "Add this path", onclick: () => {
-        const p = $("p-drop-path").value.trim();
-        if (p) { box.remove(); add(p); toast("Added: " + p); } else toast("Please enter or paste a valid folder path", true);
-      }}),
-      el("button", { type: "button", text: "📁 Browse…", onclick: () => {
-        box.remove();
-        openBrowser(null, false, add);
-      }}),
-      el("button", { type: "button", text: "🖥️ File Explorer", onclick: () => {
-        box.remove();
-        pickNativeFolder(add);
-      }}),
-      el("button", { type: "button", text: "✕ Cancel", onclick: () => box.remove() })
-    )
-  );
-  $("q-drop").after(box);
-  const inp = $("p-drop-path");
-  if (inp) inp.focus();
+        const p = inp.value.trim();
+        if (p) { box.remove(); add(p); } else toast("Paste the folder's path first.", true);
+      } }),
+      el("button", { type: "button", text: "Folder browser…", onclick: () => { box.remove(); openBrowser(null, false, add); } }),
+      C.nativeDialog ? el("button", { type: "button", text: "System folder dialog…", onclick: () => { box.remove(); pickNativeFolder(add); } }) : null,
+      el("button", { type: "button", text: "Cancel", onclick: () => box.remove() })));
+  (zone || $("q-drop")).after(box);
+  inp.focus();
 }
 function readAll(reader) {
   return new Promise((resolve) => { const out = []; const next = () => reader.readEntries(b => { if (!b.length) resolve(out); else { out.push(...b); next(); } }, () => resolve(out)); next(); });
@@ -241,41 +232,28 @@ async function sampleFiles(dir, max) {
   return out;
 }
 async function dropped(ev, add) {
-  ev.preventDefault(); ev.currentTarget.classList.remove("over");
+  ev.preventDefault();
+  const zone = ev.currentTarget; zone.classList.remove("over");
   const items = [...(ev.dataTransfer.items || [])];
   const entries = items.map(i => i.webkitGetAsEntry ? i.webkitGetAsEntry() : null).filter(Boolean);
-  if (!entries.length) {
-    const rawFiles = [...(ev.dataTransfer.files || [])];
-    if (rawFiles.length) {
-      toast("Please drop a folder, or click '📁 Choose folder…' / '🖥️ File Explorer'.", true);
-    } else {
-      toast("Drop folders (not files) – or use “Choose folder…”.", true);
-    }
-    return;
-  }
+  if (!entries.length) { toast("Drop folders (not single files) – or use “Choose folder…”.", true); return; }
   for (const ent of entries) {
     if (!ent.isDirectory) { toast(`${ent.name} is a file – drop the folder that holds the recordings.`, true); continue; }
-    toast(`Searching location for “${ent.name}”…`);
+    toast(`Looking for “${ent.name}” on this computer…`);
     const files = await sampleFiles(ent, 8);
+    if (!files.length) { promptFolderLocation(ent.name, add, zone); continue; }   // empty: cannot be found by its files
     try {
       const r = await api("POST", "/api/fs/locate", { name: ent.name, files });
-      if (r.candidates && r.candidates.length === 1) {
-        add(r.candidates[0]);
-        toast(`Added: ${r.candidates[0]}`);
-      } else if (r.candidates && r.candidates.length > 1) {
-        choosePath(ent.name, r.candidates, add);
-      } else {
-        promptFolderLocation(ent.name, add);
-      }
-    } catch (e) {
-      promptFolderLocation(ent.name, add);
-    }
+      if (r.candidates.length === 1) { add(r.candidates[0]); toast(`Found: ${r.candidates[0]}`); }
+      else if (r.candidates.length > 1) choosePath(ent.name, r.candidates, add, zone);
+      else promptFolderLocation(ent.name, add, zone);
+    } catch (e) { toast(e.message, true); promptFolderLocation(ent.name, add, zone); }
   }
 }
-function choosePath(name, paths, add) {
+function choosePath(name, paths, add, zone) {
   const box = el("div", { class: "card choose" }, el("b", { text: `Several folders called “${name}” hold these files – which one?` }),
     paths.map(p => el("div", {}, el("button", { type: "button", class: "mono", text: p, onclick: () => { box.remove(); add(p); } }))));
-  $("q-drop").after(box);
+  (zone || $("q-drop")).after(box);
 }
 for (const [zone, add] of [["q-drop", (p) => addQuickFolder(p)], ["cs-detail", (p) => addSourcePath(p)]]) {
   const z = $(zone);
@@ -300,7 +278,7 @@ function renderQuick() {
 }
 $("q-add").addEventListener("click", () => openBrowser(null, false, addQuickFolder));
 const qNat = $("q-native");
-if (qNat) qNat.addEventListener("click", () => pickNativeFolder(addQuickFolder));
+if (qNat) qNat.addEventListener("click", () => pickNativeFolder(addQuickFolder, "Choose a seized recordings folder"));
 $("q-run").addEventListener("click", async (ev) => {
   if (!C.qFolders.length) { toast("Add at least one seized folder.", true); return; }
   busy(ev.target, true); $("q-msg").textContent = "";
@@ -688,6 +666,9 @@ TAB_HOOKS.bundle = async () => { if (C.id && !C.data) await loadCase(); renderBu
     const f = await api("GET", "/api/features");
     C.colors = f.clothing_colors || [];
     for (const id of ["pp-upper", "pp-lower"]) clear($(id), el("option", { value: "", text: "any" }), C.colors.map(c => el("option", { value: c, text: c })));
+    const nat = await nativeDialogAvailable();
+    const label = /Win/.test(navigator.platform || "") ? "Windows folder dialog…" : "System folder dialog…";
+    for (const id of ["q-native", "cs-native-src"]) { const b = $(id); if (b) { b.textContent = label; b.classList.toggle("hidden", !nat); } }
     await loadCases();
     const last = localStorage.getItem("drishti-case");
     if (last && [...$("case-pick").options].some(o => o.value === last)) await selectCase(last);

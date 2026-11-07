@@ -21,8 +21,14 @@ screens, `common.py` request helpers, `static/app.js` + `static/case.js`) · Tes
 
 ## Screens
 The app opens on **Quick investigation**. Case screens (Drishti-AI, docs/CASES.md):
-* **Quick investigation** – drop the seized DVR/NVR/pen-drive folders on the page (or *Add
-  folder…*: the system folder dialog where one can open, else the built-in browser), a clock
+* **Quick investigation** – drop the seized DVR/NVR/pen-drive folders on the page, or *Choose
+  folder…* (the built-in folder browser) or *Windows folder dialog…* (shown only where the app can
+  open the system dialog: on Windows the Windows "Browse For Folder" dialog, opened by the app's
+  helper process with an invisible top-most owner window so it comes up in front; elsewhere
+  tkinter). A browser never tells a page where a dropped folder is: the app finds it by the names
+  and sizes of its files, first next to the folders used before (a seized drive holds several
+  device folders side by side), then in the user's folders and on every drive; when it is not
+  found the page asks for the path (paste, folder browser or the system dialog). A clock
   correction per folder, optional FIR / police station / officer, *Balanced* or *Fast*,
   describe-it search / faces / plates, **Run investigation**: one request creates the case, adds
   every folder and starts the run (everything is validated first; nothing is created on error).

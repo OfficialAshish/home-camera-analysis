@@ -133,69 +133,64 @@ def _public_point(p: dict) -> dict:
 def locate_folder(name: str, files: List[dict], roots: List[str], max_dirs: int = 25000,
                   seconds: float = 6.0) -> List[str]:
     """Absolute paths of folders called `name` that contain the dropped files (same relative
-    path and size). A browser never reveals where a dropped folder is; this finds it by content."""
+    path and size). A browser never reveals where a dropped folder is; this finds it by content.
+
+    In three stages, most likely first, stopping at the first that finds it: a direct child of a
+    search root (next to a folder used before, on the Desktop …), one level below the first six
+    roots, then a breadth-first search (depth 4, `max_dirs`, `seconds`) that skips system and
+    program folders. A stage may find several identical copies – the officer chooses."""
     deadline = time.monotonic() + seconds
     want = [(f["rel"], int(f["size"])) for f in files[:8] if isinstance(f, dict) and "rel" in f and "size" in f]
-    hits: List[str] = []
-    seen = set()
+    if not want:                        # found by content only: a folder name alone could be the wrong one
+        return []
+    seen: set = set()
 
-    def check_match(dir_path: str) -> bool:
-        if not os.path.isdir(dir_path):
-            return False
-        if not want:
-            return os.path.basename(dir_path.rstrip("\\/")) == name
+    def holds_the_files(d: str) -> bool:
         try:
-            return all(
-                os.path.isfile(os.path.join(dir_path, rel)) and os.path.getsize(os.path.join(dir_path, rel)) == size
-                for rel, size in want
-            )
+            return os.path.isdir(d) and all(os.path.isfile(os.path.join(d, rel)) and
+                                            os.path.getsize(os.path.join(d, rel)) == size for rel, size in want)
         except OSError:
             return False
 
-    # FAST PATH 1: Direct child of any search root (e.g. Desktop\name or P:\CODE\...\name)
-    for r in roots:
-        direct = os.path.join(r, name)
-        real = os.path.realpath(direct)
-        if real not in seen and check_match(direct):
-            seen.add(real)
-            hits.append(direct)
-            if len(hits) >= 5:
-                return hits
+    def stage(candidates) -> List[str]:
+        out: List[str] = []
+        for d in candidates:
+            real = os.path.realpath(d)
+            if real not in seen and holds_the_files(d):
+                seen.add(real)
+                out.append(d)
+                if len(out) >= 5:
+                    break
+        return out
 
-    # FAST PATH 2: Immediate 1-level subdirectories of top roots (Desktop, Downloads, CWD)
-    priority_roots = [r for r in roots[:6] if os.path.isdir(r)]
-    for r in priority_roots:
+    def below(r: str):
         try:
             with os.scandir(r) as it:
-                for de in it:
-                    if de.is_dir(follow_symlinks=False) and not de.name.startswith((".", "$")):
-                        sub_target = os.path.join(de.path, name)
-                        real = os.path.realpath(sub_target)
-                        if real not in seen and check_match(sub_target):
-                            seen.add(real)
-                            hits.append(sub_target)
-                            if len(hits) >= 5:
-                                return hits
+                subs = [de.path for de in it if not de.name.startswith((".", "$")) and de.is_dir(follow_symlinks=False)]
         except OSError:
-            continue
+            return
+        for sub in subs:
+            yield os.path.join(sub, name)
 
-    # GENERAL PATH: Breadth-first search with smart exclusion of slow/irrelevant trees
-    skip_names = {
-        "node_modules", "windows", "program files", "program files (x86)", "appdata",
-        "application data", "local settings", "proc", "sys", "system volume information",
-        "$recycle.bin", "__pycache__", "site-packages", "venv", ".venv", "env",
-        ".git", ".gemini", ".vscode", ".idea", ".planning", ".cache", ".npm", ".pip"
-    }
+    hits = stage(os.path.join(r, name) for r in roots)
+    if hits:
+        return hits
+    hits = stage(c for r in roots[:6] for c in below(r))
+    if hits:
+        return hits
+    skip_names = {"node_modules", "windows", "program files", "program files (x86)", "programdata", "appdata",
+                  "application data", "local settings", "proc", "sys", "system volume information",
+                  "$recycle.bin", "__pycache__", "site-packages", "venv", ".venv", "env", ".git", ".cache"}
     queue = collections.deque((os.path.abspath(r), 0) for r in roots if r and os.path.isdir(r))
-    visited = 0
-    while queue and visited < max_dirs and time.monotonic() < deadline:
+    visited: set = set()
+    while queue and len(visited) < max_dirs and time.monotonic() < deadline:
         d, depth = queue.popleft()
         real = os.path.realpath(d)
-        if real in seen:
+        if real in visited:
             continue
-        seen.add(real)
-        visited += 1
-        if os.path.basename(d.rstrip("\\/")) == name and check_match(d):
+        visited.add(real)
+        if os.path.basename(d.rstrip("\\/")) == name and real not in seen and holds_the_files(d):
+            seen.add(real)
             hits.append(d)
             if len(hits) >= 5:
                 break
@@ -223,22 +218,17 @@ def search_roots(recent: List[str]) -> List[str]:
     import sys
     home = os.path.expanduser("~")
     cwd = os.getcwd()
-    cwd_parent = os.path.dirname(cwd)
-    roots = []
-    # 1. Current workspace and its parent
-    roots.extend([cwd, cwd_parent])
-    # 2. Recent locations
-    for p in recent:
-        if p:
-            roots.append(p if os.path.isdir(p) else os.path.dirname(p))
-    # 3. User standard profile folders
-    roots.extend([os.path.join(home, x) for x in ("Desktop", "Downloads", "Documents", "Videos")])
-    # 4. Available drives
+    # 1. where the folders used before are: a seized drive usually holds several device folders side
+    #    by side, so the parent of a recent folder comes first (its siblings), then the folder itself
+    roots = [os.path.dirname(p.rstrip("\\/")) for p in recent if p] + [p for p in recent if p]
+    # 2. the user's standard folders, the app's folder and its parent
+    roots += [os.path.join(home, x) for x in ("Desktop", "Downloads", "Documents", "Videos")]
+    roots += [cwd, os.path.dirname(cwd)]
+    # 3. every drive / mount point, then the home folder
     if sys.platform.startswith("win"):
         roots += [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
     else:
         roots += [p for p in ("/media", "/mnt", "/Volumes", "/run/media") if os.path.isdir(p)]
-    # 5. User home
     roots.append(home)
     out = []
     for r in roots:

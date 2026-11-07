@@ -85,3 +85,5 @@ tr.off{opacity:.45}img.thumb{width:72px;border-radius:4px;vertical-align:middle}
 .enh{border:1px solid #e1e5ec;border-radius:6px;padding:3px 6px;margin:3px}
 .choose button{margin:3px 0}
 @media (max-width:900px){.studio{grid-template-columns:1fr}}
+.choose-drop{border:2px solid #2563eb;background:#eff6ff;padding:12px;margin:10px 0;border-radius:8px}
+.choose-drop b{color:#1e3a8a}.drop-path{flex:1;min-width:260px}
