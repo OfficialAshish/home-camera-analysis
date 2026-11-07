@@ -697,3 +697,21 @@ def test_timeline_levels_are_the_pipeline_levels(env, case):
     assert c.get(f"/api/cases/{CID}/timeline", query_string={"day_from": "31/10/2026"}, headers=H()).status_code == 400
     one = c.get(f"/api/cases/{CID}/timeline", query_string={"limit": 1}, headers=H()).get_json()
     assert len(one["events"]) == 1 and one["total"] == len(ok.get_json()["events"]) >= 4      # the page says what is left out
+
+
+def test_the_timeline_filters_by_score_and_kind(env, case):
+    """Reported in review: events had to be picked one by one – the timeline filters by score and
+    kind at the top (the UI then ticks all shown for the bundle, a journey or a reel)."""
+    c = env["c"]
+    allev = c.get(f"/api/cases/{CID}/timeline", headers=H()).get_json()["events"]
+    scores = sorted({e["score"] for e in allev})
+    assert len(scores) >= 2, scores                                   # the fixture has events of different scores
+    cut = scores[len(scores) // 2]
+    hi = c.get(f"/api/cases/{CID}/timeline", query_string={"min_score": cut}, headers=H()).get_json()["events"]
+    assert hi and all(e["score"] >= cut for e in hi) and len(hi) == sum(1 for e in allev if e["score"] >= cut)
+    kinds = {e["kind"] for e in allev}
+    for k in kinds:
+        got = c.get(f"/api/cases/{CID}/timeline", query_string={"kinds": k}, headers=H()).get_json()["events"]
+        assert got and {e["kind"] for e in got} == {k}
+    for bad in ({"kinds": "elephant"}, {"min_score": "101"}, {"min_score": "x"}):
+        assert c.get(f"/api/cases/{CID}/timeline", query_string=bad, headers=H()).status_code == 400, bad

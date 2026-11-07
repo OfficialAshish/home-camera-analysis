@@ -147,7 +147,16 @@
           <label><input type="checkbox" class="tl-lv" value="NORMAL" checked> NORMAL</label>
         </span>
         <label><input id="tl-people" type="checkbox"> people only</label>
+        <label>Kind <select id="tl-kind"><option value="">any</option><option>person</option><option>vehicle</option><option>animal</option><option>object</option><option>camera-tamper</option><option>lighting-change</option><option>motion-only</option></select></label>
+        <label>Score at least <input id="tl-score" type="range" min="0" max="100" step="5" value="0"> <span id="tl-score-v" class="mono">0</span></label>
         <button id="tl-go" class="primary" type="button">Show timeline</button>
+      </div>
+      <div id="tl-bulk" class="row bulk hidden">
+        <label class="inline"><input id="tl-all" type="checkbox"> tick all shown</label>
+        <span id="tl-ticked" class="small"></span>
+        <button id="tl-b-bundle" type="button">Add ticked to court bundle</button>
+        <button id="tl-b-journey" type="button">Journey of ticked</button>
+        <button id="tl-b-reel" type="button" class="primary">Highlight reel of ticked</button>
       </div>
       <p class="hint">All cameras of the case on one clock: the calibrated time (DVR time + the clock correction of each source). The DVR's own time is shown under it.</p>
       <div id="tl-lanes" class="lanes"></div>
@@ -172,6 +181,11 @@
     <div class="card">
       <h2 id="jr-title">Journey</h2>
       <p id="jr-hint" class="hint">Find a person, face or vehicle under “Timeline &amp; search” – every sighting appears here in calibrated time order. Untick wrong matches, then rebuild the journey.</p>
+      <div id="jr-bulk" class="row bulk hidden">
+        <label>Tick sightings with score at least <input id="jr-score" type="range" min="0" max="1" step="0.05" value="0"> <span id="jr-score-v" class="mono">0.00</span></label>
+        <button id="jr-all" type="button">Tick all</button><button id="jr-none" type="button">Untick all</button>
+        <span id="jr-ticked" class="small"></span>
+      </div>
       <div id="jr-points"></div>
       <div class="row">
         <button id="jr-rebuild" type="button">Rebuild journey from ticked sightings</button>
@@ -335,9 +349,10 @@
         <label>Person <input id="f-person" size="7" placeholder="P0003"></label>
         <label>Plate <input id="f-plate" size="10" placeholder="MH12AB1234"></label>
         <label>Sort <select id="f-sort"><option value="time">time</option><option value="score">score</option></select></label>
+        <label>Score at least <input id="f-score" type="range" min="0" max="100" step="5" value="0"> <span id="f-score-v" class="mono">0</span></label>
         <button id="f-go" class="primary">Show</button>
       </div>
-      <div id="ev-count" class="hint"></div>
+      <div class="row"><span id="ev-count" class="hint"></span><button id="ev-add-all" type="button" class="hidden">Add all matching events to evidence</button></div>
       <div id="ev-list" class="evlist"></div>
       <div class="row"><button id="ev-prev">‹ Previous</button><button id="ev-next">Next ›</button></div>
     </div>

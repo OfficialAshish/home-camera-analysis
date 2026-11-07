@@ -146,6 +146,17 @@ def test_officer_investigation_flow(server):
         expect(page.locator("#jr-points tr").nth(1)).to_be_visible()
         expect(page.locator("#jr-flow .stop").first).to_contain_text("Mall Gate NVR")
         expect(page.locator("#jr-map")).to_contain_text("Add the map position")
+        # bulk ticking by score instead of one by one: a high limit unticks the weaker matches
+        n_pts = page.evaluate("C.points.length")
+        expect(page.locator("#jr-ticked")).to_have_text(f"{n_pts} of {n_pts} sighting(s) ticked")
+        scores = sorted(page.evaluate("C.points.map(p => p.score)"))
+        cut = scores[len(scores) // 2]
+        page.evaluate("(v) => { const r = document.getElementById('jr-score'); r.value = v; r.dispatchEvent(new Event('input')); }", str(cut))
+        keep = sum(1 for x in scores if x >= cut - 1e-9)
+        expect(page.locator("#jr-ticked")).to_have_text(f"{keep} of {n_pts} sighting(s) ticked")
+        expect(page.locator("#jr-points tr.off")).to_have_count(n_pts - keep)
+        page.click("#jr-all")
+        expect(page.locator("#jr-points tr.off")).to_have_count(0)
 
         # --- one event: video, Forensic Studio, court bundle
         page.click("#tabs button[data-tab=investigate]")
@@ -234,6 +245,22 @@ def test_officer_investigation_flow(server):
         assert dl.value.suggested_filename.startswith("bundle_")
         page.locator("#bd-exports button", has_text="Verify").first.click()
         expect(page.locator("#bd-exports .st-ok")).to_contain_text("intact")
+
+        # --- the timeline filtered by kind and score, every shown event ticked at once
+        page.click("#tabs button[data-tab=investigate]")
+        page.select_option("#tl-kind", "person")
+        page.wait_for_function("() => C.timeline && C.timeline.events.length && C.timeline.events.every(e => e.kind === 'person')")
+        n_shown = page.evaluate("C.timeline.events.length")
+        expect(page.locator("#tl-list .ev")).to_have_count(n_shown)
+        page.check("#tl-all")
+        expect(page.locator("#tl-ticked")).to_have_text(f"{n_shown} of {n_shown} shown event(s) ticked")
+        page.click("#tl-b-bundle")
+        expect(page.locator("#toast")).to_contain_text("in the court bundle")
+        top = page.evaluate("Math.max(...C.timeline.events.map(e => e.score))")
+        page.evaluate("(v) => { const r = document.getElementById('tl-score'); r.value = v; r.dispatchEvent(new Event('change')); }", str(int(top)))
+        page.wait_for_function(f"() => C.timeline.events.every(e => e.score >= {int(top)})")
+        expect(page.locator("#tl-list .ev")).to_have_count(page.evaluate("C.timeline.events.length"))
+        page.select_option("#tl-kind", "")
 
         # --- the case screen remembers what was typed (declarants) and shows every source
         page.click("#tabs button[data-tab=cases]")

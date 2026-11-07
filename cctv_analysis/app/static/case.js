@@ -319,10 +319,52 @@ $("q-run").addEventListener("click", async (ev) => {
 
 // ------------------------------------------------------------------ timeline
 $("tl-go").addEventListener("click", loadTimeline);
+$("tl-score").addEventListener("input", (e) => { $("tl-score-v").textContent = e.target.value; });
+$("tl-score").addEventListener("change", loadTimeline);
+$("tl-kind").addEventListener("change", loadTimeline);
+// ticked events of the timeline: "source/event" keys; bulk actions work on them
+C.tlTicked = new Set();
+const evKey = (e) => `${e.source_id}/${e.event_id}`;
+function tickedEvents() { return (C.timeline ? C.timeline.events : []).filter(e => C.tlTicked.has(evKey(e))); }
+function showTicked() {
+  const n = tickedEvents().length, shown = C.timeline ? C.timeline.events.length : 0;
+  $("tl-ticked").textContent = `${n} of ${shown} shown event(s) ticked`;
+  $("tl-all").checked = shown > 0 && n === shown;
+  for (const id of ["tl-b-bundle", "tl-b-journey", "tl-b-reel"]) $(id).disabled = !n;
+}
+$("tl-all").addEventListener("change", (e) => {
+  for (const ev of C.timeline ? C.timeline.events : []) { if (e.target.checked) C.tlTicked.add(evKey(ev)); else C.tlTicked.delete(evKey(ev)); }
+  document.querySelectorAll("#tl-list .ev input.tick").forEach(b => { b.checked = e.target.checked; });
+  showTicked();
+});
+function tickedItems(max) {
+  const t = tickedEvents();
+  if (t.length > max) { toast(`${t.length} events ticked – at most ${max}: raise the score filter or narrow the dates.`, true); return null; }
+  return t.map(e => ({ source_id: e.source_id, event_id: e.event_id }));
+}
+$("tl-b-bundle").addEventListener("click", () => addToBundle(tickedEvents().map(e => ({ source_id: e.source_id, event_id: e.event_id, label: `${e.source_label}/${e.camera} ${e.calibrated_time || ""}` }))));
+$("tl-b-journey").addEventListener("click", async () => {
+  const items = tickedItems(200); if (!items) return;
+  try { const r = await api("POST", caseApi("/sightings"), { kind: "list", query: { items } });
+    C.points = r.points.map(p => ({ ...p, on: true })); C.sightTitle = `${items.length} ticked event(s)`; C.sources = r.sources; showTab("journey"); renderJourney(r); }
+  catch (e) { toast(e.message, true); }
+});
+$("tl-b-reel").addEventListener("click", async (ev) => {
+  const items = tickedItems(200); if (!items) return;
+  busy(ev.target, true);
+  try {
+    const r = await api("POST", caseApi("/reel"), { kind: "list", query: { items } });
+    const j = await waitJob(r.job, () => { $("tl-ticked").textContent = "making the highlight reel from the original recordings…"; });
+    if (j.status !== "done") throw new Error(j.error || j.status);
+    toast(`Highlight reel: ${j.result.sightings} event(s) in ${j.result.parts} piece(s), ${dur(j.result.seconds)} – Court bundle › Exports.`);
+    showTicked();
+  } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }
+});
 async function loadTimeline() {
   if (!needCase()) return;
   const q = new URLSearchParams({ day_from: $("tl-from").value, day_to: $("tl-to").value, limit: 2000,
-    levels: [...document.querySelectorAll(".tl-lv:checked")].map(x => x.value).join(","), people: $("tl-people").checked ? "1" : "" });
+    levels: [...document.querySelectorAll(".tl-lv:checked")].map(x => x.value).join(","), people: $("tl-people").checked ? "1" : "",
+    min_score: $("tl-score").value, kinds: $("tl-kind").value });
   const n = nextSeq("timeline");
   try {
     const r = await api("GET", caseApi("/timeline?" + q));
@@ -332,7 +374,13 @@ async function loadTimeline() {
       `${r.events.length} event(s) on ${new Set(r.events.map(e => e.source_id)).size} source(s), in calibrated time order` +
       (r.total > r.events.length ? ` – the first ${r.events.length} of ${r.total}: narrow the dates or levels to see the rest` : "");
     renderLanes(r.events, r.sources);
-    clear($("tl-list"), r.events.map(e => el("div", { class: "ev", onclick: () => openCaseEvent(e.source_id, e.event_id) },
+    const shownKeys = new Set(r.events.map(evKey));
+    for (const k of [...C.tlTicked]) if (!shownKeys.has(k)) C.tlTicked.delete(k);       // ticks apply to what is shown
+    $("tl-bulk").classList.toggle("hidden", !r.events.length);
+    showTicked();
+    clear($("tl-list"), r.events.map(e => el("div", { class: "ev", "data-event": e.event_id, onclick: () => openCaseEvent(e.source_id, e.event_id) },
+      el("input", { type: "checkbox", class: "tick", title: "tick for the bulk actions above", checked: C.tlTicked.has(evKey(e)),
+        onclick: (ev) => ev.stopPropagation(), onchange: (ev) => { if (ev.target.checked) C.tlTicked.add(evKey(e)); else C.tlTicked.delete(evKey(e)); showTicked(); } }),
       e.snapshot ? el("img", { src: caseFile(e.snapshot), loading: "lazy", alt: "" }) : null,
       el("div", {}, el("span", { class: "lv lv-" + e.level, text: e.level + " " + Math.round(e.score) }), " ", el("b", { text: `${e.source_label} / ${e.camera || ""}` })),
       el("div", { class: "small" }, el("b", { text: ts(e.calibrated_time) }), ` · ${dur(e.duration)} · ${e.kind}${e.persons ? " · " + e.persons + " person(s)" : ""}`),
@@ -477,21 +525,37 @@ async function runSightings(body, title) {
     const r = await api("POST", caseApi("/sightings"), body);
     if (stale("sight", n)) return;
     C.points = r.points.map(p => ({ ...p, on: true })); C.sightTitle = title; C.sources = r.sources;
+    $("jr-score").value = "0"; $("jr-score-v").textContent = "0.00";
     showTab("journey"); renderJourney(r);
   } catch (e) { toast(e.message, true); }
 }
 function ticked() { return C.points.filter(p => p.on).map(p => ({ source_id: p.source_id, event_id: p.event_id, track: p.track })); }
+function showJourneyTicked() {
+  $("jr-ticked").textContent = `${C.points.filter(p => p.on).length} of ${C.points.length} sighting(s) ticked`;
+  document.querySelectorAll("#jr-points tr[data-i]").forEach(tr => {
+    const p = C.points[+tr.dataset.i]; tr.classList.toggle("off", !p.on); tr.querySelector("input").checked = p.on;
+  });
+}
+$("jr-score").addEventListener("input", (e) => {
+  const min = parseFloat(e.target.value); $("jr-score-v").textContent = min.toFixed(2);
+  for (const p of C.points) p.on = p.score === undefined || p.score === null || p.score >= min;   // sightings without a score (exact plate / name) stay
+  showJourneyTicked();
+});
+$("jr-all").addEventListener("click", () => { C.points.forEach(p => { p.on = true; }); showJourneyTicked(); });
+$("jr-none").addEventListener("click", () => { C.points.forEach(p => { p.on = false; }); showJourneyTicked(); });
 function renderJourney(r) {
   $("jr-title").textContent = C.sightTitle ? `Journey · ${C.sightTitle}` : "Journey";
   $("jr-hint").classList.toggle("hidden", !!C.points.length);
+  $("jr-bulk").classList.toggle("hidden", !C.points.length);
   clear($("jr-points"), C.points.length ? el("table", {}, el("tr", {}, ["", "", "Source / camera", "Calibrated time", "DVR clock", "Score", ""].map(h => el("th", { text: h }))),
-    C.points.map(p => el("tr", { class: p.on ? "" : "off" },
-      el("td", {}, el("input", { type: "checkbox", checked: p.on, onchange: (e) => { p.on = e.target.checked; e.target.closest("tr").classList.toggle("off", !p.on); } })),
+    C.points.map((p, i) => el("tr", { class: p.on ? "" : "off", "data-i": String(i) },
+      el("td", {}, el("input", { type: "checkbox", checked: p.on, onchange: (e) => { p.on = e.target.checked; showJourneyTicked(); } })),
       el("td", {}, p.thumb ? el("img", { src: caseFile(p.thumb), class: "thumb", alt: "" }) : null),
       el("td", { text: `${p.source_label} / ${p.camera || ""}${p.plate ? " · " + p.plate : ""}` }), el("td", {}, el("b", { text: ts(p.calibrated_time) })),
       el("td", { class: "small", text: ts(p.dvr_time) }), el("td", { text: p.score === undefined ? "" : String(p.score) }),
       el("td", {}, el("button", { type: "button", text: "Open", onclick: () => { showTab("investigate"); openCaseEvent(p.source_id, p.event_id); } }))))) :
     el("p", { class: "hint", text: r ? "No sightings found." : "" }));
+  if (C.points.length) showJourneyTicked();
   if (!r) return;
   const j = r.journey;
   $("jr-summary").textContent = j.stops.length ? `${j.stops.length} stop(s): ${j.summary}${j.untimed ? ` · ${j.untimed} sighting(s) without a time are not in the route` : ""}` : "";

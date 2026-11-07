@@ -38,18 +38,25 @@ The app opens on **Quick investigation**. Case screens (Drishti-AI, docs/CASES.m
   *Relink…* when the drive letter changed; *Remove*), *Analyse all sources*, the case audit log.
   The cases folder can be moved to another disk (*Change…*).
 * **Timeline & search** – all events of all sources on the calibrated clock (lanes per source and
-  cards with calibrated and DVR time), event detail (the recording played from its playback copy,
-  people, plates, snapshots; *Find this person on all cameras*, *Follow face*, *Find this
-  vehicle*, *Open in Forensic Studio at this moment*, *Add to court bundle*), and three searches
-  over the whole case: *Describe it* (SigLIP-2), *Clothing colours* (top/bottom), *Number plate*.
+  cards with calibrated and DVR time), filters at the top (dates, levels, people only, kind, score
+  at least) with *tick all shown* and bulk *Add ticked to court bundle* / *Journey of ticked* /
+  *Highlight reel of ticked*; event detail (the recording played from its playback copy, people
+  and vehicles with *Enhance face / person / vehicle*, plates with *Enhance plate* and *Type the
+  plate*, snapshots; *Find this person on all cameras*, *Follow face*, *Find <reference person>
+  on all cameras*, *Find this vehicle*, *Open in Forensic Studio at this moment*, *Add to court
+  bundle*), and the searches over the whole case: *Describe it* (SigLIP-2), *Clothing colours*
+  (top/bottom), *Number plate*, *Plates not read*.
 * **Journey** – the sightings of the search in calibrated order with tick boxes (untick wrong
-  matches → *Rebuild journey*), the route as a flow of camera stops with travel times, an offline
-  map when the sources have positions (latitude/longitude or site-plan x/y; nothing is fetched
-  from the internet), *Make highlight reel*, *Add ticked to court bundle*.
-* **Forensic Studio** – the original frame decoded from the recording at the chosen time
-  (lossless PNG), filters with live preview (debounced, latest result wins), four-corner
-  perspective by clicking the original, multi-frame stacking (3–9 frames, ECC alignment), *Save*
-  (PNG + filter log + hashes, checked to reproduce bit for bit), saved stills of the case.
+  matches, or tick by *score at least* → *Rebuild journey*), the route as a flow of camera stops
+  with travel times, an offline map when the sources have positions (latitude/longitude or
+  site-plan x/y; nothing is fetched from the internet), *Make highlight reel* (every second of
+  footage once), *Add ticked to court bundle*.
+* **Forensic Studio** – zoomable original and enhanced viewers (wheel at the pointer, drag, Fit /
+  1:1 / 2–16×, real pixels), a region (dragged, or from *Enhance …*), picture from one frame, a
+  region-following stack or multi-frame super-resolution of the region, filters with presets and
+  live preview (debounced, latest result wins), four-corner perspective on the enhanced picture,
+  *Read plate / text*, *Ask the AI* (audited), *Save* (PNG + record + hashes, checked to reproduce
+  bit for bit from the recording), saved stills of the case (`docs/FORENSIC-STUDIO.md`).
 * **Court bundle** – the chosen records and stills, Part A per device and Part B (kept for the next
   export, audited), *Preview certificate* per device (printable page), *Create court bundle*
   (one certificate per device), the case's exports with SHA-256 and *Verify*.
@@ -64,11 +71,13 @@ Single-folder screens (unchanged, for one DVR without a case):
 2. **Progress** – stage, video n of N, movement n of M, %, time left, live log, *Stop*
    (finished videos are kept; the rest continues next run).
 3. **Results** – KPIs, filters (dates, camera, levels, people only, review status, text, person,
-   plate), paginated event cards, event detail (flags with reasons, AI description, clip,
-   snapshots, plate crops + enhanced images, people/face crops, review status + notes,
-   *Add to evidence*), *Fix recording times*.
+   plate, score at least), paginated event cards, *Add all matching events to evidence*, event
+   detail (flags with reasons, AI description, clip, snapshots, plate crops + enhanced images with
+   *Type the plate*, people/face crops, review status + notes, *Add to evidence*), *Fix recording
+   times*.
 4. **Highlights** – day picker, video player, index (click → jump to that movement).
-5. **Number plates** – search with 0–2 character tolerance.
+5. **Number plates** – search with 0–2 character tolerance; *only vehicles whose plate was not
+   read*; *Type the plate* on every tile (docs/PLATES.md).
 6. **Faces** – one card per person; NEW ones outlined.
 7. **Export evidence** – case id, operator, notes, face/plate blurring → ZIP; audit log view with
    integrity check.

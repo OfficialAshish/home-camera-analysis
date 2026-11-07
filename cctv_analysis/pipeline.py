@@ -763,6 +763,7 @@ class Analyzer:
             "animal" if kinds & ANIMALS else ("object" if kinds else
                                               {"tamper": "camera-tamper", "lighting": "lighting-change"}.get(
                                                   ev.get("origin", ""), "motion-only"))
+        assert kind in R.EVENT_KINDS, kind
         if cfg.require_person_for_event and kind in ("motion-only", "object", "lighting-change"):
             return False
 

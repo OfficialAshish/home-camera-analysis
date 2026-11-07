@@ -12,7 +12,7 @@ import os
 import pathlib
 import sqlite3
 import threading
-from typing import Optional
+from typing import List, Optional
 
 from ..plates import normalize, within_edits
 from ..storage import rel_to
@@ -104,8 +104,12 @@ def _best_snapshot(snaps) -> str:
 
 def events(out: str, day_from: str = "", day_to: str = "", camera: str = "", levels=(), q: str = "",
            person: str = "", plate: str = "", people_only: bool = False, review: str = "", sort: str = "time",
-           limit: int = 50, offset: int = 0) -> dict:
-    cond, args = ["1=1"], []
+           limit: int = 50, offset: int = 0, min_score: float = 0.0) -> dict:
+    cond: List[str] = ["1=1"]
+    args: List[object] = []
+    if min_score > 0:                         # the rule score (0–100) the event was ranked with
+        cond.append("score >= ?")
+        args.append(float(min_score))
     # plain range predicates so the start_dt index is used (substr() would force a full scan)
     if day_from:
         cond.append("start_dt >= ?")

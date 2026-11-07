@@ -29,6 +29,7 @@ from .. import licensing as LIC
 from ..cases import CASE_FIELDS, Case, CaseStore, Source, calibrate, format_offset, parse_offset, reference_photos
 from ..config import VIDEO_EXTENSIONS, Config
 from ..investigation import FACE_MODES, face_options
+from ..rules import EVENT_KINDS
 from . import features
 from .common import ApiError, abs_dir, inside
 
@@ -655,8 +656,13 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         if not set(levels) <= set(LEVELS):
             raise ApiError(400, f"levels: {', '.join(LEVELS)}")
         limit = int(_num(a.get("limit"), "limit", 1, 5000, 500))
+        min_score = _num(a.get("min_score"), "min_score", 0, 100, 0)
+        kinds = [x for x in a.get("kinds", "").split(",") if x]
+        if not set(kinds) <= set(EVENT_KINDS):
+            raise ApiError(400, f"kinds: {', '.join(EVENT_KINDS)}")
         c = open_case(cid)
-        rows, total = J.timeline_page(c, a.get("day_from", ""), a.get("day_to", ""), levels, a.get("people") == "1", limit)
+        rows, total = J.timeline_page(c, a.get("day_from", ""), a.get("day_to", ""), levels, a.get("people") == "1", limit,
+                                      min_score, kinds)
         for r in rows:
             r["snapshot"] = _case_rel(r["source_id"], r["snapshot"])
         return jsonify(events=rows, total=total, sources=[{"source_id": s.source_id, "label": s.label} for s in c.sources])

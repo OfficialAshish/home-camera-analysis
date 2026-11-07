@@ -148,6 +148,11 @@ def test_results_endpoints(analysed):
     first = ev["items"][0]
     assert set(first) == {"event_id", "level", "score", "camera", "start", "end", "duration", "kind", "people", "plates",
                           "identities", "flags", "thumb", "approx_time", "review"}     # response minimalism
+    cut = sorted(x["score"] for x in ev["items"])[-1]
+    top = c.get("/api/results/events", query_string={"out": out, "levels": "HIGH,REVIEW,LOW,NORMAL", "min_score": cut},
+                headers=H()).get_json()
+    assert top["total"] == sum(1 for x in ev["items"] if x["score"] >= cut) and all(x["score"] >= cut for x in top["items"])
+    assert c.get("/api/results/events", query_string={"out": out, "min_score": "200"}, headers=H()).status_code == 400
     pl = c.get("/api/results/plates", query_string={"out": out, "q": "MH12AB1284", "edits": 1}, headers=H()).get_json()
     assert [p["text"] for p in pl["plates"]][:1] == ["MH12AB1234"]
     none = c.get("/api/results/plates", query_string={"out": out, "q": "KA01ZZ0000", "edits": 1}, headers=H()).get_json()

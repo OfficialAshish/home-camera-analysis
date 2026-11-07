@@ -98,3 +98,5 @@ tr.off{opacity:.45}img.thumb{width:72px;border-radius:4px;vertical-align:middle}
 .zoombar button{padding:4px 9px}.ask textarea{min-width:300px}
 .corner{position:absolute;width:10px;height:10px;margin:-6px 0 0 -6px;border-radius:50%;background:#ff1744;border:2px solid #fff;pointer-events:none}
 .ai-answer{white-space:pre-wrap}
+.bulk{background:#f3f6fb;border:1px solid #e1e5ec;border-radius:6px;padding:6px 8px;margin:6px 0}
+.ev input.tick{float:right;width:18px;height:18px;margin:2px}

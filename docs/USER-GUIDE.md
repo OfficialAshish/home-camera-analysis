@@ -48,11 +48,15 @@ the black window into the browser.
   similar pictures from all DVRs come first. **Clothing colours**: choose top and bottom colours.
   **Number plate**: type a plate. **Plates not read**: every vehicle of the case whose plate nobody
   has read yet – type it, or enhance it in the Forensic Studio first.
+* **Filters at the top**: dates, levels, people only, *Kind* (person, vehicle, …) and *Score at
+  least* narrow the timeline. *Tick all shown* ticks every event shown; then *Add ticked to court
+  bundle*, *Journey of ticked* or *Highlight reel of ticked* (at most 200) – no picking one by one.
 * Similarity ranks pictures for you to look at; it is not proof. Always look at the footage.
 
 ## A3. Journey
-Every sighting of the person, face or vehicle, in calibrated time order. Untick the wrong ones,
-click **Rebuild journey**: the route shows each camera stop with arrival, departure and the travel
+Every sighting of the person, face or vehicle, in calibrated time order. Untick the wrong ones –
+or move *Tick sightings with score at least* to untick every weaker match at once (*Tick all* /
+*Untick all*) – then click **Rebuild journey**: the route shows each camera stop with arrival, departure and the travel
 time to the next. With map positions of the cameras (*Cases › source › Map position*) the route is
 also drawn on a plan (no internet map is used). **Make highlight reel** makes one video of the
 ticked sightings; every frame shows source, camera, corrected time and the DVR's own time.
@@ -61,14 +65,35 @@ seen as several tracks) are joined into one piece, so no second of footage appea
 reel's index lists which sightings each piece shows.
 
 ## A4. Forensic Studio
-The frame is decoded from the original recording at the time shown (change the time and *Load
-frame*). Add filters: *CLAHE* (dark or backlit faces), *Levels*, *Denoise*, *UnsharpMask* /
-*HighPass* (edges), *WienerDeblur* / *RichardsonLucy* (motion or focus blur: set length and angle of
-the blur), *Perspective* (click the four corners of a plate or sign on the original), *Crop*,
-*Upscale*. *Frames to stack* combines 3–9 frames to reduce noise. The preview follows every change.
-**Save enhanced still**: the still is kept with its input, the filter log and SHA-256, and the app
-checks that re-running the filters gives exactly the same picture. Filters show detail that is in
-the recording; they cannot add detail that is not.
+**Open it from what you want to see**: in an event, *Enhance face* / *Enhance person* on a person,
+*Enhance car* (motorcycle, …) on a vehicle, *Enhance plate in Forensic Studio* on a plate (also in
+*Plates not read*); the Studio opens at the right moment with that region selected. *Open in
+Forensic Studio at this moment* opens the whole frame.
+
+* **Look closely**: the original (left) and the enhanced picture (right) zoom with the mouse wheel
+  where the pointer is and move by dragging; *Fit*, *1:1*, 2× … 16×. Keep *show real pixels* on to
+  see the recording's own pixels, not a smoothed image. *◀ frame / frame ▶* step one frame.
+* **Region**: *Select region…* and drag a rectangle around the plate or face on the original;
+  *Whole frame* clears it.
+* **Picture from**: *one frame*; *several frames, aligned and combined* (less noise; with a region
+  the region is followed while it moves); *super-resolution of the region* – for a small plate or
+  face: 5–25 frames of the moving vehicle or person are aligned to a fraction of a pixel and
+  combined into a 2–8× larger, sharper picture of the region. It only combines what the frames
+  contain; it does not guess.
+* **Filters**: *Plate preset*, *Night preset*, or add *CLAHE* (dark or backlit faces), *Levels*,
+  *Denoise*, *UnsharpMask* / *HighPass* (edges), *WienerDeblur* / *RichardsonLucy* (motion or focus
+  blur: length and angle), *Perspective* (click the four corners of the plate on the enhanced
+  picture), *Crop*, *Upscale*. The preview follows every change.
+* **Read plate / text (OCR)**: the plate reader and the text reader read the enhanced picture and
+  show how sure they are. Opened from a plate, type the plate as *you* read it and *Save as the
+  plate reading*.
+* **Ask the AI**: choose a question (read the plate, describe the person / vehicle, read all text)
+  or write one. The AI model of *Settings › AI model providers* answers; the answer is advice for
+  you, never part of the picture, and it is kept in the case audit log with the question.
+* **Save enhanced still**: the still is kept with its input, the region, how the picture was made,
+  the filter log and SHA-256, and the app decodes the recording again to check that it gives
+  exactly the same picture. Filters show detail that is in the recording; they cannot add detail
+  that is not.
 
 ## A5. Court bundle (Section 63, BSA 2023)
 1. Records come from *Add to court bundle* (events) and *Journey › Add ticked*; tick the enhanced
@@ -119,8 +144,9 @@ after the current step. Finished videos are kept and the rest continues the next
 You can close the browser; the analysis continues while the black window is open.
 
 ## 4. Results
-* **Results**: filter by date, camera and level (HIGH / REVIEW first), search words (*running*,
-  *bag*), a person number or a plate. Click an event for snapshots, the clip, the reasons, plates
+* **Results**: filter by date, camera and level (HIGH / REVIEW first), *Score at least*, search
+  words (*running*, *bag*), a person number or a plate; *Add all matching events to evidence* adds
+  every event the filters show (up to 1000) at once. Click an event for snapshots, the clip, the reasons, plates
   and people. Set a review status (*Suspicious*, *False alarm*, …) and notes.
 * **Highlights**: one video per day with every movement in time order, in
   `highlights/<year>/<month>/` of the results folder. Click a line under the video to jump to it.

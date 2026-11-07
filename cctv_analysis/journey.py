@@ -59,13 +59,15 @@ def _best_snapshot(snaps_json) -> str:
 
 
 def timeline(case: Case, day_from: str = "", day_to: str = "", levels: Sequence[str] = (), people_only: bool = False,
-             limit: int = 500) -> List[dict]:
-    return timeline_page(case, day_from, day_to, levels, people_only, limit)[0]
+             limit: int = 500, min_score: float = 0.0, kinds: Sequence[str] = ()) -> List[dict]:
+    return timeline_page(case, day_from, day_to, levels, people_only, limit, min_score, kinds)[0]
 
 
 def timeline_page(case: Case, day_from: str = "", day_to: str = "", levels: Sequence[str] = (),
-                  people_only: bool = False, limit: int = 500):
-    """(the first `limit` events in calibrated order, how many events match in total)."""
+                  people_only: bool = False, limit: int = 500, min_score: float = 0.0, kinds: Sequence[str] = ()):
+    """(the first `limit` events in calibrated order, how many events match in total).
+    `min_score`: only events scored at least this (the rule score, 0–100); `kinds`: only these
+    event kinds (person, vehicle, …)."""
     out = []
     for s in sources(case):
         db = _db(s["out_dir"])
@@ -74,12 +76,19 @@ def timeline_page(case: Case, day_from: str = "", day_to: str = "", levels: Sequ
         try:
             q = ("SELECT event_id, camera, start_dt, end_dt, duration, kind, level, score, n_person_tracks, "
                  "plates, identities, snapshots, time_source, rel_path, start_off FROM events")
-            conds, args = [], []
+            conds: List[str] = []
+            args: List[object] = []
             if levels:
                 conds.append(f"level IN ({','.join('?' * len(levels))})")
                 args += list(levels)
             if people_only:
                 conds.append("n_person_tracks > 0")
+            if min_score > 0:
+                conds.append("score >= ?")
+                args.append(float(min_score))
+            if kinds:
+                conds.append(f"kind IN ({','.join('?' * len(kinds))})")
+                args += list(kinds)
             rows = db.execute(q + (" WHERE " + " AND ".join(conds) if conds else ""), args).fetchall()
         finally:
             db.close()

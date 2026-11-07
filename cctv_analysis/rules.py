@@ -9,6 +9,8 @@ import numpy as np
 
 # event levels, most to least suspicious (the pipeline assigns them from the score)
 LEVELS = ("HIGH", "REVIEW", "LOW", "NORMAL")
+# what an event is about – the pipeline's `kind` (what was detected in it, or why it was cut)
+EVENT_KINDS = ("person", "vehicle", "animal", "object", "camera-tamper", "lighting-change", "motion-only")
 
 WEIGHTS = {
     "watchlist_face": 50,

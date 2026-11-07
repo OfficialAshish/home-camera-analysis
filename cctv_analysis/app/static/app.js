@@ -284,16 +284,37 @@ async function loadResults() {
     S.offset = 0; loadEvents();
   } catch (e) { toast(e.message, true); clear($("kpis")); clear($("ev-list")); }
 }
-async function loadEvents() {
-  const q = new URLSearchParams({ out: S.resOut, day_from: $("f-from").value, day_to: $("f-to").value, camera: $("f-cam").value,
+function eventQuery(limit, offset) {
+  return new URLSearchParams({ out: S.resOut, day_from: $("f-from").value, day_to: $("f-to").value, camera: $("f-cam").value,
     levels: [...document.querySelectorAll(".f-lv:checked")].map(x => x.value).join(","), q: $("f-q").value.trim(),
     person: $("f-person").value.trim(), plate: $("f-plate").value.trim(), people: $("f-people").checked ? "1" : "",
-    review: $("f-review").value, sort: $("f-sort").value, limit: S.limit, offset: S.offset });
+    review: $("f-review").value, sort: $("f-sort").value, min_score: $("f-score").value, limit, offset });
+}
+$("f-score").addEventListener("input", (e) => { $("f-score-v").textContent = e.target.value; });
+$("f-score").addEventListener("change", () => { S.offset = 0; loadEvents(); });
+// every event matching the filters (all pages, at most 1000) into the evidence list in one go
+$("ev-add-all").addEventListener("click", async (ev) => {
+  busy(ev.target, true);
+  try {
+    const l = exportList(); let added = 0;
+    for (let off = 0; off < 1000; off += 200) {
+      const r = await api("GET", "/api/results/events?" + eventQuery(200, off));
+      for (const e of r.items) if (!l.find(x => x.id === e.event_id)) { l.push({ id: e.event_id, label: `${e.start || ""} ${e.camera || ""} ${e.level}` }); added++; }
+      if (off + r.items.length >= r.total) break;
+    }
+    localStorage.setItem("cctv-export:" + S.resOut, JSON.stringify(l));
+    toast(`${added} event(s) added – ${l.length} in the evidence list.`);
+  } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }
+});
+async function loadEvents() {
+  const q = eventQuery(S.limit, S.offset);
   const n = nextSeq("events");
   try {
     const r = await api("GET", "/api/results/events?" + q);
     if (stale("events", n)) return;
     $("ev-count").textContent = r.total ? `${r.offset + 1}–${Math.min(r.total, r.offset + r.items.length)} of ${r.total} event(s)` : "No events match.";
+    $("ev-add-all").classList.toggle("hidden", !r.total);
+    $("ev-add-all").textContent = r.total > 1000 ? "Add the first 1000 matching events to evidence" : `Add all ${r.total} matching event(s) to evidence`;
     $("ev-prev").disabled = r.offset === 0; $("ev-next").disabled = r.offset + r.items.length >= r.total;
     clear($("ev-list"), r.items.map(e => el("div", { class: "ev", onclick: () => openEvent(e.event_id) },
       e.thumb ? el("img", { src: fileUrl(S.resOut, e.thumb), loading: "lazy", alt: "" }) : null,

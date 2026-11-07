@@ -536,15 +536,18 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         a = request.args
         try:
             limit, offset = int(a.get("limit", 50)), int(a.get("offset", 0))
+            min_score = float(a.get("min_score") or 0)
         except ValueError:
-            raise ApiError(400, "limit/offset must be numbers")
+            raise ApiError(400, "limit/offset/min_score must be numbers")
+        if not 0 <= min_score <= 100:
+            raise ApiError(400, "min_score must be 0 to 100")
         for k in ("day_from", "day_to"):
             if a.get(k) and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", a[k]):
                 raise ApiError(400, f"{k} must be YYYY-MM-DD")
         return jsonify(RS.events(out_param(), a.get("day_from", ""), a.get("day_to", ""), a.get("camera", ""),
                                  [x for x in a.get("levels", "").split(",") if x], a.get("q", "")[:100],
                                  a.get("person", "")[:20], a.get("plate", "")[:20], a.get("people") == "1",
-                                 a.get("review", ""), a.get("sort", "time"), limit, offset))
+                                 a.get("review", ""), a.get("sort", "time"), limit, offset, min_score))
 
     @app.get("/api/results/events/<event_id>")
     def r_event(event_id):
