@@ -11,8 +11,11 @@ debounced and the newest result wins); Perspective takes its four corners from c
 original; *Frames to stack* takes 3–9 consecutive decoded frames around the time. *Save enhanced
 still* stores `<case>/enhancements/<name>_<time>.png`, its `_input.png` and a `.json` record (source,
 event, camera, video file and offset, DVR and calibrated time, chain, log, hashes, versions,
-operator), checks that re-running the chain reproduces the output hash, and writes
-`enhancement_saved` with both hashes into the case audit log. Saved stills can be put into the
+operator), then **decodes the frame(s) from the recording again, re-runs stacking and filters and
+compares the output hash** (and re-runs the chain on the saved input). The result is stored as
+`reproduced_from_recording` in the record and in the `enhancement_saved` audit entry with both
+hashes; a still that does not reproduce is reported to the officer, not claimed reproducible
+(`test_a_saved_still_is_reproduced_from_the_recording_or_flagged` simulates a drifting decode). Saved stills can be put into the
 court bundle, under the certificate of the device their frame came from.
 
 ## Principle

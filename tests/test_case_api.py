@@ -226,6 +226,30 @@ def test_natural_language_search_ranks_the_described_scene_first(env, case):
     assert r.status_code == 409 and "Scene tags" in r.get_json()["error"]
 
 
+def test_describe_it_search_can_be_turned_on_later_without_analysing_again(env, case):
+    """A case analysed with scene search off: turning it on and running again indexes the saved
+    keyframes of the finished events (the videos are not analysed again)."""
+    c, s = env["c"], env["seized"]
+    r = c.post("/api/cases/quick", json={"case_id": "LATE-SEARCH", "preset": "fast", "folders": [str(s / "Mall_Gate_NVR")],
+                                         "options": {**OPTIONS, "use_semantic": False}}, headers=H())
+    assert r.status_code == 202, r.get_json()
+    assert wait(c, r.get_json()["job"]["id"])["status"] == "done"
+    assert c.post("/api/cases/LATE-SEARCH/text-search", json={"query": "people walking"}, headers=H()).status_code == 409
+    r = c.post("/api/cases/LATE-SEARCH/run", json={"preset": "fast", "options": {**OPTIONS, "use_semantic": True}},
+               headers=H())
+    j = wait(c, r.get_json()["job"]["id"])
+    assert j["status"] == "done", j
+    src = j["result"]["sources"]["mall-gate-nvr"]
+    assert src["videos_ok"] == 0 and src["text_index_added"] >= 3             # nothing re-analysed, keyframes indexed
+    hits = c.post("/api/cases/LATE-SEARCH/text-search", json={"query": "people walking in a shopping mall"},
+                  headers=H()).get_json()["results"]
+    assert hits and all(h["source_id"] == "mall-gate-nvr" and h["thumb"] for h in hits)
+    again = wait(c, c.post("/api/cases/LATE-SEARCH/run", json={"preset": "fast", "options": {**OPTIONS}},
+                           headers=H()).get_json()["job"]["id"])
+    assert "text_index_added" not in again["result"]["sources"]["mall-gate-nvr"] or \
+        again["result"]["sources"]["mall-gate-nvr"]["text_index_added"] == 0             # nothing left to add
+
+
 # ------------------------------------------------------------------ recordings and frames
 def test_recordings_play_from_their_lossless_copy_and_only_ingested_files_are_served(env, case):
     c = env["c"]
@@ -346,6 +370,29 @@ def test_forensic_studio_previews_saves_and_reproduces(env, case):
     assert any(e["action"] == "enhancement_saved" and e["details"]["output_sha256"] == s["output_sha256"] for e in audit)
     filters = c.get("/api/enhance/filters", headers=H()).get_json()["filters"]
     assert set(filters) >= {"CLAHE", "WienerDeblur", "Perspective"} and filters["CLAHE"]["clip_limit"]["max"] == 40.0
+
+
+def test_a_saved_still_is_reproduced_from_the_recording_or_flagged(env, case, monkeypatch):
+    """'Reproducible' means: decoding the recording again and re-running stack and filters gives the
+    same bytes. A decode that differs (simulated) must be reported, not claimed reproducible."""
+    import cctv_analysis.video_io as VV
+    c = env["c"]
+    real, calls = VV.read_frame_at, []
+
+    def drifting(*a, **k):
+        calls.append(1)
+        f = real(*a, **k)
+        return f if len(calls) == 1 else cv2.add(f, 1)
+    monkeypatch.setattr(VV, "read_frame_at", drifting)
+    r = _studio(c, "save", chain=[{"op": "Levels", "gamma": 1.2}], name="drift", t=5.52)
+    assert r.status_code == 201 and len(calls) == 2, r.get_json()
+    assert r.get_json()["enhancement"]["reproducible"] is False
+    monkeypatch.undo()
+    st = _studio(c, "save", chain=[], stack={"frames": 3}, name="stack3", t=6.52)
+    x = st.get_json()["enhancement"]
+    assert st.status_code == 201 and x["reproducible"] is True and x["log"].startswith("MultiFrameStack(frames=3")
+    rec = json.loads(c.get(f"/api/cases/{CID}/file", query_string={"p": x["file"][:-4] + ".json"}, headers=H()).data)
+    assert rec["reproduced_from_recording"] is True and rec["stack"]["aligned"] == 3
 
 
 # ------------------------------------------------------------------ reel and court bundle

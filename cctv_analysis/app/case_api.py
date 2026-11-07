@@ -393,7 +393,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
                 raise RuntimeError("; ".join(res["sources"][k]["error"] for k in failed))
             return {"case_id": c.case_id, "cancelled": res["cancelled"], "trial": not lic.valid,
                     "sources": {k: {kk: vv for kk, vv in v.items() if kk in ("label", "files", "remuxed", "appearances",
-                                                                               "error", "skipped")}
+                                                                               "text_index_added", "error", "skipped")}
                                 | {"videos_ok": (v.get("stats") or {}).get("videos_ok", 0),
                                    "events": (v.get("stats") or {}).get("events", 0)}
                                 for k, v in res["sources"].items()}}
@@ -472,7 +472,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
                                 "open the original in VLC")
         return send_file(inside(s.path, rel), conditional=True, max_age=3600)
 
-    def load_frames(c: Case, sid: str, eid: str, t: Optional[float], n: int):
+    def load_frames(c: Case, sid: str, eid: str, t: Optional[float], n: int, fresh: bool = False):
         from .. import video_io as V
         e = event_row(c, sid, eid)
         if t is None:
@@ -483,7 +483,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
                                 "another drive letter now, relink the source)")
         key = (c.case_id, sid, eid, round(t, 3), n)
         with frames_lock:
-            if key in frames_cache:
+            if key in frames_cache and not fresh:
                 frames_cache.move_to_end(key)
                 return e, t, frames_cache[key]
         meta = V.probe(video)
@@ -624,9 +624,8 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
     def case_text_search(cid):
         """Natural-language search ("man in a red helmet on a motorbike") over the keyframes of
         every source analysed with scene search on (SigLIP-2 embeddings)."""
-        import numpy as np
-
         from ..journey import rel_to
+        from ..semantic import search_index
         d = body()
         query = _text(d.get("query"), "query", 200)
         if len(query) < 2:
@@ -646,8 +645,9 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
             if model:
                 by_model[model].append(s)
         if not by_model:
-            raise ApiError(409, "no source of this case was analysed with 'Scene tags & free-text search' – "
-                                "turn it on and run the case again")
+            raise ApiError(409, "no source of this case has a describe-it search index: 'Scene tags & free-text "
+                                "search' was off, or its model was not installed (Settings › Models › Scene search) – "
+                                "turn it on and run the case again (finished videos are not analysed again)")
         hits = []
         for model, srcs in by_model.items():
             try:
@@ -656,17 +656,11 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
                 log.warning("text search model %s unavailable: %s", model, e)
                 raise ApiError(503, "the scene-search model is not installed – download 'Scene search (SigLIP-2)' "
                                     "under Settings › Models")
-            q = sem.encode_text([f"this is a photo of {query}."])[0]
             for s in srcs:
-                out = c.source_dir(s.source_id)
-                with np.load(os.path.join(out, "semantic_index.npz"), allow_pickle=True) as z:
-                    emb, keys = z["emb"].astype(np.float32), [str(k) for k in z["keys"]]
-                if not keys:
-                    continue
-                sc = emb @ q
-                for i in np.argsort(-sc)[:limit]:
-                    eid, _, t = keys[i].rpartition("|")
-                    hits.append((float(sc[i]), s, eid, float(t)))
+                for key, score in search_index(sem, os.path.join(c.source_dir(s.source_id), "semantic_index.npz"),
+                                               query, limit):
+                    eid, _, t = key.rpartition("|")
+                    hits.append((score, s, eid, float(t)))
         hits.sort(key=lambda h: -h[0])
         res = []
         for score, s, eid, t in hits[:limit]:
@@ -722,7 +716,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         return jsonify(job=job.public()), 202
 
     # ------------------------------------------------------------ Forensic Studio
-    def studio_input(c: Case, d: dict):
+    def studio_input(c: Case, d: dict, fresh: bool = False):
         from .. import enhance as EN
         s = source_of(c, d.get("source_id"))
         t = d.get("t")
@@ -731,7 +725,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         if not isinstance(stack, dict):
             raise ApiError(400, "stack must be an object")
         n = int(_num(stack.get("frames"), "stack.frames", 1, 15, 1))
-        e, t, frames = load_frames(c, s.source_id, d.get("event_id", ""), t, n)
+        e, t, frames = load_frames(c, s.source_id, d.get("event_id", ""), t, n, fresh)
         chain = d.get("chain") or []
         try:
             EN.describe(chain)                       # validates every step
@@ -793,15 +787,27 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         if stack_rec:
             record = {**stack_rec, "chain": rec["chain"], "log": stack_rec["log"] + (
                 " → " + rec["log"] if rec["chain"] else "")}
-        saved = EN.save_enhancement(os.path.join(c.root, "enhancements"), name, source, img, out, record, user())
-        saved["reproducible"] = EN.reproduce(os.path.join(c.root, "enhancements"), saved) if rec["chain"] else True
+        edir = os.path.join(c.root, "enhancements")
+        saved = EN.save_enhancement(edir, name, source, img, out, record, user())
+        # reproducible from the recording itself: decode the frame(s) again, stack and filter again
+        _, _, _, img2, _, _ = studio_input(c, d, fresh=True)
+        saved["reproducible"] = EN.sha256_bytes(EN.png_bytes(run_chain(img2, chain)[0])) == saved["output_sha256"] \
+            and (not rec["chain"] or EN.reproduce(edir, saved))
+        rec_path = os.path.join(edir, saved["name"][:-4] + ".json")
+        with open(rec_path, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        stored["reproduced_from_recording"] = saved["reproducible"]
+        with open(rec_path, "w", encoding="utf-8") as fh:
+            json.dump(stored, fh, indent=1)
         c.audit.append("enhancement_saved", case_id=c.case_id, name=saved["name"], source=source, log=saved["log"],
-                       input_sha256=saved["input_sha256"], output_sha256=saved["output_sha256"], by=user())
+                       input_sha256=saved["input_sha256"], output_sha256=saved["output_sha256"],
+                       reproduced_from_recording=saved["reproducible"], by=user())
         return jsonify(enhancement=_enh_public(saved)), 201
 
     def _enh_public(r: dict) -> dict:
         return {k: r.get(k) for k in ("name", "input", "log", "source", "input_sha256", "output_sha256", "created",
-                                      "operator", "reproducible")} | {"file": "enhancements/" + r["name"],
+                                      "operator")} | {"reproducible": r.get("reproducible", r.get("reproduced_from_recording")),
+                                                      "file": "enhancements/" + r["name"],
                                                                       "input_file": "enhancements/" + r["input"]}
 
     @app.get("/api/cases/<cid>/enhancements")

@@ -82,6 +82,55 @@ class Semantic:
         return res
 
 
+def backfill_index(out_dir: str, cfg, device: str = "cpu") -> int:
+    """Embed the saved keyframes (raw snapshots) of events that have no entry in
+    ``semantic_index.npz`` yet – events analysed while scene search was off – so that turning
+    it on later does not require analysing the videos again. Returns the number of keyframes added."""
+    import json
+    import sqlite3
+
+    import cv2
+
+    from .storage import resolve
+    path = os.path.join(out_dir, "semantic_index.npz")
+    keys: List[str] = []
+    embs: List[np.ndarray] = []
+    if os.path.exists(path):
+        z = np.load(path, allow_pickle=True)
+        keys, embs = [str(k) for k in z["keys"]], list(z["emb"])
+    have = {k.rpartition("|")[0] for k in keys}
+    db = sqlite3.connect(f"file:{os.path.join(out_dir, 'analysis.db')}?mode=ro", uri=True)
+    try:
+        rows = db.execute("SELECT event_id, snapshots FROM events").fetchall()
+    finally:
+        db.close()
+    todo = []
+    for eid, snaps in rows:
+        if eid in have:
+            continue
+        for sn in json.loads(snaps or "[]"):
+            p = resolve(out_dir, sn.get("raw") or sn.get("annotated"))
+            if p:
+                todo.append((f"{eid}|{float(sn.get('t_off') or 0):.2f}", p))
+    if not todo:
+        return 0
+    sem = Semantic(cfg, device)
+    added = 0
+    for i in range(0, len(todo), 64):
+        part = [(k, cv2.imread(p)) for k, p in todo[i:i + 64]]
+        part = [(k, im) for k, im in part if im is not None]
+        if not part:
+            continue
+        for (k, _), e in zip(part, sem.encode_images([im for _, im in part])):
+            keys.append(k)
+            embs.append(e.astype(np.float16))
+            added += 1
+    np.savez_compressed(path + ".tmp.npz", emb=np.stack(embs).astype(np.float16), keys=np.array(keys, dtype=object))
+    os.replace(path + ".tmp.npz", path)
+    log.info("scene search: %d keyframe(s) of earlier events added to the index", added)
+    return added
+
+
 def search_index(sem: Semantic, index_path: str, query: str, k: int = 20) -> List[Tuple[str, float]]:
     """Rank stored keyframes by similarity to a free-text query."""
     if not os.path.exists(index_path):

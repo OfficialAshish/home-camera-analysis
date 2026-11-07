@@ -204,7 +204,7 @@ async function pollJob() {
     const stage = { planning: "Reading recording times", video: "Analysing video", motion: "Scanning for movement",
       event: "Analysing movement", reports: "Building reports and highlight videos", finished: "Finished", discovering: "Finding videos",
       ingest: "Starting", hashing: "Computing SHA-256 of the seized files", remuxing: "Making lossless playback copies",
-      "appearance index": "Indexing people's appearance" }[p.stage] || p.stage || j.status;
+      "appearance index": "Indexing people's appearance", "scene search index": "Indexing keyframes for describe-it search" }[p.stage] || p.stage || j.status;
     const src = p.sources ? `Source ${p.source_index} of ${p.sources} (${p.source_label}) · ` : "";
     const unit = ["hashing", "remuxing"].includes(p.stage) ? "file" : "video";
     $("job-stage").textContent = `${src}${stage}${p.total ? ` · ${unit} ${p.index || 0} of ${p.total}` : ""}${p.events ? ` · movement ${p.event_index} of ${p.events}` : ""} · ${Math.round(p.percent || 0)}%`;

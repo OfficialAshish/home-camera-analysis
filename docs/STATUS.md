@@ -62,7 +62,10 @@ regenerated, self-test, mutation check, CI on GitHub).
 | 16 | Notebook would break when an embedded module imports a non-embedded one | build fails with the module named | positive control in the previous commit; notebook regenerated with every change |
 | 17 | Duplicate helpers (`results.rel` / `journey._rel`); level names undefined (I first used `INFO`) | `storage.rel_to`; `rules.LEVELS` | grep: one definition each; level test |
 | 18 | `run_app.bat` assumed `python` on PATH with packages, no ffmpeg, no check | rewritten: first Python with the packages (`.venv`, `python`, `py -3`), offer to install, bundled ffmpeg on PATH, `--self-test`; CRLF enforced by `.gitattributes` | CI windows job step `run_app.bat --self-test` |
-| 19 | Three mutation-check entries no longer matched the code after refactors (would have been SETUP-ERROR) | updated; 12 new mutations for the new guards | `tools/mutation_check.py`: every original found exactly once (checked), results in section 5 |
+| 19 | Three mutation-check entries no longer matched the code after refactors (would have been SETUP-ERROR) | updated; new mutations for the new guards | `tools/mutation_check.py`: every original found exactly once (checked), results in section 5 |
+| 20 | Describe-it search could not be turned on after a case was analysed: finished videos are skipped, so the index stayed empty and the advice "run again" did nothing | `semantic.backfill_index` embeds the saved keyframes of finished events during the next run | `test_describe_it_search_can_be_turned_on_later_without_analysing_again`: 0 videos re-analysed, ≥ 3 keyframes added, search answers; mutation fails it |
+| 21 | A stack-only still was reported "reproducible" without any check (nothing to re-run) | every save decodes the frame(s) from the recording again, re-runs stack and filters and compares the hash; stored as `reproduced_from_recording` and audited | `test_a_saved_still_is_reproduced_from_the_recording_or_flagged` (a simulated drifting decode is reported, a 3-frame stack reproduces); mutation fails it |
+| 22 | Text search re-implemented the ranking of `semantic.search_index` | reuses it | one ranking function |
 
 ## 3. Known limitations and where I was wrong
 Limitations (not rounded up):

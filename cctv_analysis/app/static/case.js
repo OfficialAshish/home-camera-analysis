@@ -546,7 +546,8 @@ $("fx-save").addEventListener("click", async (ev) => {
   try {
     const r = await api("POST", caseApi("/enhance/save"), studioBody({ name: $("fx-name").value.trim() }));
     const x = r.enhancement;
-    toast(`Saved ${x.name}${x.reproducible ? " – re-running the filters reproduced it bit for bit" : ""}.`);
+    if (x.reproducible) toast(`Saved ${x.name} – decoding the recording again and re-running the filters reproduced it bit for bit.`);
+    else toast(`Saved ${x.name}, but decoding the recording again did NOT give the same picture – check before using it.`, true);
     const b = bundle(); b.enh = b.enh || []; if (!b.enh.includes(x.name)) b.enh.push(x.name); saveBundle(b);
     loadSaved();
   } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }

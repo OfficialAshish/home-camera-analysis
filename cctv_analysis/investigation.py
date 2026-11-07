@@ -111,6 +111,15 @@ def run_case(case: Case, options: Optional[dict] = None, preset: str = "balanced
                     budget -= len(V.find_videos(cfg))
                 an = Analyzer(cfg, analysis_progress, cancel)
                 res["stats"] = an.run()
+                device, semantic_on = an.device, cfg.use_semantic    # the analyzer turns it off if its model failed
+                del an                                              # free the detector before loading SigLIP
+                if semantic_on and not cancel.is_set():
+                    from .semantic import backfill_index
+                    emit(i, src, {"stage": "scene search index", "percent": 95})
+                    try:
+                        res["text_index_added"] = backfill_index(out, cfg, device)
+                    except Exception as e:                       # search is an aid: never fail the run for it
+                        log.warning("source %s: scene-search index of earlier events not built: %s", src.source_id, e)
         if appearance_index and not cancel.is_set() and os.path.exists(os.path.join(out, "analysis.db")):
             from .reid import build_index
             emit(i, src, {"stage": "appearance index", "percent": 96})

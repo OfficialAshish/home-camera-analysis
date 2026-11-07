@@ -41,6 +41,10 @@ For each source in turn (one heavy analysis at a time – what an 8 GB laptop su
 2. **Analysis**: the normal pipeline (`pipeline.Analyzer`) with the chosen preset, reading the
    **original** files; raw streams are decoded from their remux (same frames, can seek).
 3. **Appearance index** (`reid.build_index`).
+4. **Describe-it search index**, when scene search is on: the pipeline embeds the keyframes of the
+   events it analyses; `semantic.backfill_index` also embeds the saved keyframes (raw snapshots)
+   of events analysed earlier with scene search off – so it can be turned on later without
+   analysing the videos again (`test_describe_it_search_can_be_turned_on_later_without_analysing_again`).
 
 The run can be cancelled between sources, files and events; finished videos are skipped next time.
 
