@@ -439,7 +439,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
             raise ApiError(400, f"sources must be ids of this case's sources: {sorted(known)}")
         lic = lic_status()
         key = settings.secret("vlm_api_key")
-        if options.get("use_vlm") and options.get("vlm_provider") == "openai" and key:
+        if options.get("use_vlm") and options.get("vlm_provider") in ("openai", "nvidia") and key:
             os.environ[Config().vlm_api_key_env] = key
 
         def run(job):

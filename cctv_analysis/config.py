@@ -196,7 +196,7 @@ class Config:
     semantic_alert_score: float = 0.10           # SigLIP sigmoid; also needs lift >= 0.6
 
     use_vlm: bool = True                         # AI text description of events (slow on CPU)
-    vlm_provider: str = "transformers"           # transformers (local HF model) | openai (any OpenAI-compatible server)
+    vlm_provider: str = "transformers"           # transformers (local HF model) | openai | nvidia
     vlm_model: str = "Qwen/Qwen3-VL-2B-Instruct" # HF repo id, or the model name the server knows (e.g. "qwen3-vl:2b")
     vlm_base_url: str = ""                       # openai provider: e.g. http://127.0.0.1:11434/v1 (Ollama), :1234/v1 (LM Studio)
     vlm_api_key_env: str = "CCTV_VLM_API_KEY"    # name of the environment variable holding the API key (never stored)
@@ -239,7 +239,7 @@ class Config:
         if bad:
             p.append(f"time_sources: unknown {bad}; valid: {list(TIME_SOURCES)}")
         choices = {"ocr_engine": ENGINES, "osd_date_order": ("auto", "ymd", "dmy", "mdy"),
-                   "vlm_provider": ("transformers", "openai"), "vlm_scope": ("flagged", "people", "all"),
+                   "vlm_provider": ("transformers", "openai", "nvidia"), "vlm_scope": ("flagged", "people", "all"),
                    "clip_scope": ("all", "people", "flagged"), "reel_scope": ("all", "people", "flagged"),
                    "plate_detector": ("auto", "yolo-plate", "classic"),
                    "plate_ocr": ("auto", "fast-plate-ocr", "generic"), "plate_region": ("IN", "any"),
@@ -248,7 +248,9 @@ class Config:
         for k, ok in choices.items():
             if getattr(self, k) not in ok:
                 p.append(f"{k}: {getattr(self, k)!r} is not one of {list(ok)}")
-        if self.use_vlm and self.vlm_provider == "openai" and not self.vlm_base_url.strip():
+        if self.use_vlm and self.vlm_provider == "nvidia" and not self.vlm_base_url.strip():
+            self.vlm_base_url = "https://integrate.api.nvidia.com/v1"
+        if self.use_vlm and self.vlm_provider in ("openai", "nvidia") and not self.vlm_base_url.strip():
             p.append("vlm_base_url: NOT_CONFIGURED – required when vlm_provider='openai' (e.g. http://127.0.0.1:11434/v1)")
         for k in ("open_hour", "close_hour"):
             v = (getattr(self, k) or "").strip()

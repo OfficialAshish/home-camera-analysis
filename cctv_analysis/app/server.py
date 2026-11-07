@@ -316,11 +316,13 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
     def vlm_test():
         from ..vlm import list_server_models
         d = body()
-        url = d.get("base_url", "")
+        url = d.get("base_url") or d.get("url") or d.get("invoke_url") or ""
         if not isinstance(url, str) or not re.match(r"^https?://", url.strip()):
             raise ApiError(400, "base_url must start with http:// or https://")
+        key = d.get("api_key") or settings.secret("vlm_api_key") or os.environ.get("CCTV_VLM_API_KEY", "")
+        model = d.get("model", "")
         try:
-            models = list_server_models(url.strip(), d.get("api_key") or settings.secret("vlm_api_key"))
+            models = list_server_models(url.strip(), key, model=model)
         except Exception as e:
             raise ApiError(502, f"could not reach the server: {str(e)[:200]}")
         return jsonify(models=models)
@@ -489,7 +491,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         lic = lic_status()
         LIC.apply_limits(cfg, lic)
         key = settings.secret("vlm_api_key")
-        if cfg.use_vlm and cfg.vlm_provider == "openai" and key:
+        if cfg.use_vlm and cfg.vlm_provider in ("openai", "nvidia") and key:
             os.environ[cfg.vlm_api_key_env] = key
         settings.remember("recent_inputs", cfg.input_dir)
         settings.remember("recent_outputs", cfg.output_dir)

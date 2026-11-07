@@ -3,12 +3,14 @@ and image reading used for plates/clock when OCR is not enough.
 
 * ``transformers`` – a local Hugging Face model (default Qwen3-VL-2B-Instruct).
 * ``openai``       – any OpenAI-compatible ``/v1/chat/completions`` server running a vision
-                     model: Ollama, LM Studio, vLLM, llama.cpp server, a hosted API …
+                     model: Ollama, LM Studio, vLLM, llama.cpp server, hosted APIs (OpenAI,
+                     NVIDIA NIM / integrate.api.nvidia.com) …
+* ``nvidia``       – convenience alias for NVIDIA NIM / integrate.api.nvidia.com endpoints.
 
-Wire format (openai provider): OpenAI Chat Completions with an image content part
+Wire format (openai / nvidia provider): OpenAI Chat Completions with an image content part
 ``{"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,…"}}`` – see
-https://platform.openai.com/docs/api-reference/chat/create . Ollama accepts this object form
-(ollama/openai/openai.go, case "image_url", which takes either a {"url"} object or a string).
+https://platform.openai.com/docs/api-reference/chat/create . Ollama, vLLM, and NVIDIA NIM
+all accept this object form.
 The API key is read from the environment variable named by ``Config.vlm_api_key_env``; it is
 never written to config files or logs.
 """
@@ -92,17 +94,39 @@ class TransformersVLM(VLMBase):
         return self.proc.batch_decode(gen, skip_special_tokens=True)[0].strip()
 
 
+def normalize_vlm_base_url(url: str) -> str:
+    """Strip trailing slashes and /chat/completions suffix if user passed full invocation URL."""
+    u = (url or "").strip().rstrip("/")
+    if u.endswith("/chat/completions"):
+        u = u[:-len("/chat/completions")].rstrip("/")
+    return u
+
+
+def resolve_chat_completion_url(url: str) -> str:
+    """Given a base URL, full endpoint, or host, return the exact POST /chat/completions URL."""
+    u = (url or "").strip().rstrip("/")
+    if u.endswith("/chat/completions"):
+        return u
+    if "api.nvidia.com" in u and not u.endswith("/v1"):
+        return f"{u}/v1/chat/completions"
+    return f"{u}/chat/completions"
+
+
 class OpenAICompatVLM(VLMBase):
-    """Any server implementing OpenAI's POST {base_url}/chat/completions with image inputs."""
+    """Any server implementing OpenAI's POST {base_url}/chat/completions with image inputs
+    (Ollama, LM Studio, vLLM, llama.cpp server, NVIDIA NIM / integrate.api.nvidia.com, OpenAI …)."""
     name = "openai"
 
     def __init__(self, cfg, session=None):
         super().__init__(cfg)
-        if not (cfg.vlm_base_url or "").strip():
+        raw_url = (cfg.vlm_base_url or "").strip()
+        if not raw_url and cfg.vlm_provider == "nvidia":
+            raw_url = "https://integrate.api.nvidia.com/v1"
+        if not raw_url:
             raise RuntimeError("NOT_CONFIGURED: vlm_base_url is empty (e.g. http://127.0.0.1:11434/v1 for Ollama)")
         import requests
         self.http = session or requests.Session()
-        self.url = cfg.vlm_base_url.rstrip("/") + "/chat/completions"
+        self.url = resolve_chat_completion_url(raw_url)
         self.key = os.environ.get(cfg.vlm_api_key_env or "", "")
 
     def payload(self, img_bgr: np.ndarray, prompt: str, max_new_tokens: int) -> dict:
@@ -111,22 +135,44 @@ class OpenAICompatVLM(VLMBase):
         if not ok:
             raise ValueError("could not encode image")
         b64 = base64.b64encode(buf.tobytes()).decode()
-        return {"model": self.cfg.vlm_model, "max_tokens": int(max_new_tokens), "temperature": 0,
+        # For hosted/reasoning models (e.g. NVIDIA NIM / Mistral Large reasoning), reasoning tokens consume token budget.
+        # Ensure at least 512 tokens so reasoning does not exhaust max_tokens before producing content.
+        is_cloud_or_reasoning = "api.nvidia.com" in self.url or any(k in (self.cfg.vlm_model or "").lower() for k in ("mistral", "reasoning", "r1"))
+        tokens = max(int(max_new_tokens), 512) if is_cloud_or_reasoning else int(max_new_tokens)
+        temp = 0.2 if is_cloud_or_reasoning else 0
+        return {"model": self.cfg.vlm_model, "max_tokens": tokens, "temperature": temp,
                 "messages": [{"role": "user", "content": [
                     {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}}]}]}
 
     def ask(self, img_bgr, prompt, max_new_tokens=160):
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self.key:
             headers["Authorization"] = "Bearer " + self.key
-        r = self.http.post(self.url, json=self.payload(img_bgr, prompt, max_new_tokens), headers=headers,
-                           timeout=self.cfg.vlm_timeout)
+        body = self.payload(img_bgr, prompt, max_new_tokens)
+        r = self.http.post(self.url, json=body, headers=headers, timeout=self.cfg.vlm_timeout)
+        if r.status_code == 400:
+            # Fallback if server rejects temperature or specific parameter
+            fallback_body = {
+                "model": self.cfg.vlm_model,
+                "max_tokens": max(int(max_new_tokens), 256),
+                "messages": body["messages"],
+            }
+            r_fb = self.http.post(self.url, json=fallback_body, headers=headers, timeout=self.cfg.vlm_timeout)
+            if r_fb.status_code == 200:
+                r = r_fb
         if r.status_code != 200:
             raise RuntimeError(f"VLM server returned HTTP {r.status_code}: {r.text[:200]}")
         j = r.json()
         try:
-            content = j["choices"][0]["message"]["content"]
+            choice = j["choices"][0]
+            msg = choice.get("message", {})
+            content = msg.get("content")
+            # Fallback for reasoning models where answer is in reasoning_content or finish_reason is length
+            if not content and msg.get("reasoning_content"):
+                content = msg["reasoning_content"]
+            if content is None and "text" in choice:
+                content = choice["text"]
         except (KeyError, IndexError, TypeError):
             raise RuntimeError(f"unexpected VLM response shape: {str(j)[:200]}")
         if isinstance(content, list):          # some servers return content parts
@@ -134,17 +180,65 @@ class OpenAICompatVLM(VLMBase):
         return (content or "").strip()
 
 
-def list_server_models(base_url: str, api_key: str = "", timeout: float = 10.0) -> List[str]:
-    """GET {base_url}/models (OpenAI 'List models'); used by the app's 'Test connection'."""
+def list_server_models(base_url: str, api_key: str = "", timeout: float = 10.0, model: str = "") -> List[str]:
+    """Probe {base_url}/models (OpenAI 'List models') or fallback to /chat/completions; used by 'Test connection'."""
     import requests
-    h = {"Authorization": "Bearer " + api_key} if api_key else {}
-    r = requests.get(base_url.rstrip("/") + "/models", headers=h, timeout=timeout)
-    r.raise_for_status()
-    return sorted(m.get("id", "") for m in r.json().get("data", []) if isinstance(m, dict))
+    base = normalize_vlm_base_url(base_url)
+    h = {"Accept": "application/json"}
+    if api_key:
+        h["Authorization"] = "Bearer " + api_key
+
+    candidates = []
+    if base:
+        candidates.append(f"{base}/models")
+        if not base.endswith("/v1") and "/v1/" not in base:
+            candidates.append(f"{base}/v1/models")
+        if "/v1" in base:
+            candidates.append(base.rsplit("/v1", 1)[0] + "/models")
+
+    last_err = None
+    for cand in candidates:
+        try:
+            r = requests.get(cand, headers=h, timeout=timeout)
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("data") if isinstance(data, dict) else (data if isinstance(data, list) else [])
+                if isinstance(items, list) and items:
+                    ids = [m.get("id") or m.get("name") if isinstance(m, dict) else str(m) for m in items]
+                    return sorted(filter(None, ids))
+        except Exception as e:
+            last_err = e
+
+    # Fallback: if /models endpoint is not exposed (common on hosted NVIDIA NIM invoke URLs / custom proxies),
+    # probe the /chat/completions endpoint directly to verify connectivity and auth.
+    chat_url = resolve_chat_completion_url(base_url)
+    probe_model = model.strip() or "mistralai/mistral-large-4-1t-a52b"
+    test_payload = {
+        "model": probe_model,
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "ping"}]}],
+        "max_tokens": 1,
+    }
+    try:
+        r = requests.post(chat_url, headers={"Content-Type": "application/json", **h}, json=test_payload, timeout=timeout)
+        if r.status_code == 200:
+            return [probe_model, "(connected via /chat/completions)"]
+        if r.status_code in (401, 403):
+            raise RuntimeError(f"Authentication failed (HTTP {r.status_code}): {r.text[:200]}")
+        if r.status_code in (400, 422):
+            msg = r.text[:200]
+            if "model" in msg.lower():
+                return [f"(server connected, specify valid model: {probe_model})"]
+            return [f"(server connected via chat/completions, status {r.status_code})"]
+        r.raise_for_status()
+    except Exception as e:
+        if last_err and not isinstance(e, RuntimeError):
+            raise last_err
+        raise e
+    return []
 
 
 def make_vlm(cfg, device: str) -> VLMBase:
-    if cfg.vlm_provider == "openai":
+    if cfg.vlm_provider in ("openai", "nvidia"):
         return OpenAICompatVLM(cfg)
     if cfg.vlm_provider == "transformers":
         return TransformersVLM(cfg, device)

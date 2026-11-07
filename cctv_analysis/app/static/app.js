@@ -465,7 +465,7 @@ $("vlm-save").addEventListener("click", async () => {
 });
 $("vlm-test").addEventListener("click", async (ev) => {
   busy(ev.target, true);
-  try { const r = await api("POST", "/api/vlm/test", { base_url: $("vlm-url").value.trim(), api_key: $("vlm-key").value });
+  try { const model = $("cfg-vlm_model") ? $("cfg-vlm_model").value.trim() : ""; const r = await api("POST", "/api/vlm/test", { base_url: $("vlm-url").value.trim(), api_key: $("vlm-key").value, model });
     clear($("vlm-out"), el("p", { class: "st-ok", text: "Connected. Models: " + (r.models.join(", ") || "(none listed)") }));
     const u = $("cfg-vlm_base_url"); if (u && !u.value) u.value = $("vlm-url").value.trim(); }
   catch (e) { clear($("vlm-out"), el("p", { class: "st-error", text: e.message })); } finally { busy(ev.target, false); }

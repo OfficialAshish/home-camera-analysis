@@ -150,3 +150,67 @@ def test_transformers_provider_runs_a_local_model():
     assert isinstance(v, TransformersVLM)
     out = v.describe_event(cv2.imread(os.path.join(ROOT, "tests", "assets", "car_rear.png")), "1 car")
     assert isinstance(out["description"], str) and out["description"].strip()
+
+
+def test_vlm_url_normalization_and_nvidia():
+    from cctv_analysis.vlm import normalize_vlm_base_url, resolve_chat_completion_url
+    assert normalize_vlm_base_url("https://integrate.api.nvidia.com/v1/chat/completions") == "https://integrate.api.nvidia.com/v1"
+    assert normalize_vlm_base_url("https://integrate.api.nvidia.com/v1") == "https://integrate.api.nvidia.com/v1"
+    assert resolve_chat_completion_url("https://integrate.api.nvidia.com/v1/chat/completions") == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert resolve_chat_completion_url("https://integrate.api.nvidia.com/v1") == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert resolve_chat_completion_url("https://integrate.api.nvidia.com") == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert resolve_chat_completion_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1/chat/completions"
+
+    cfg = Config(vlm_provider="nvidia", vlm_base_url="https://integrate.api.nvidia.com/v1/chat/completions")
+    assert not cfg.validate()
+    v = make_vlm(cfg, "cpu")
+    assert isinstance(v, OpenAICompatVLM)
+    assert v.url == "https://integrate.api.nvidia.com/v1/chat/completions"
+
+
+def test_list_server_models_fallback_when_models_404s():
+    import socket, threading
+    from flask import Flask, jsonify, request
+    from waitress.server import create_server
+
+    app = Flask("test-fallback")
+    @app.post("/v1/chat/completions")
+    def chat():
+        return jsonify(choices=[{"message": {"content": "ok"}}])
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = create_server(app, host="127.0.0.1", port=port, threads=2)
+    threading.Thread(target=srv.run, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{port}/v1/chat/completions"
+        models = list_server_models(url, model="mistralai/mistral-large-4-1t-a52b")
+        assert any("mistral" in m for m in models) or any("connected" in m for m in models)
+    finally:
+        srv.close()
+
+
+def test_reasoning_content_fallback():
+    import socket, threading, numpy as np
+    from flask import Flask, jsonify
+    from waitress.server import create_server
+
+    app = Flask("test-reasoning")
+    @app.post("/v1/chat/completions")
+    def chat():
+        return jsonify(choices=[{"message": {"role": "assistant", "content": None,
+                                             "reasoning_content": "The image shows a person at counter."}}])
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    srv = create_server(app, host="127.0.0.1", port=port, threads=2)
+    threading.Thread(target=srv.run, daemon=True).start()
+    try:
+        cfg = Config(vlm_provider="openai", vlm_base_url=f"http://127.0.0.1:{port}/v1")
+        v = make_vlm(cfg, "cpu")
+        res = v.ask(np.zeros((64, 64, 3), np.uint8), "describe")
+        assert res == "The image shows a person at counter."
+    finally:
+        srv.close()

@@ -272,7 +272,7 @@ def estimate(cfg, total_seconds: float, n_videos: int, rates: Optional[Dict[str,
     if cfg.use_vlm:
         share = {"all": 1.0, "people": 0.5, "flagged": 0.15}.get(cfg.vlm_scope, 0.15)
         n = min(cfg.vlm_max_events, events * share)
-        key = ("vlm_s_per_event_openai" if cfg.vlm_provider == "openai" else
+        key = ("vlm_s_per_event_openai" if cfg.vlm_provider in ("openai", "nvidia") else
                "vlm_s_per_event_transformers_gpu" if gpu else "vlm_s_per_event_transformers_cpu")
         parts["AI descriptions"] = n * r[key]
     if cfg.use_plates:
