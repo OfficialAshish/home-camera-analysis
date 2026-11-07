@@ -130,7 +130,9 @@ class Settings:
 
 
 def native_dialog() -> bool:
-    """Can this computer show the system folder dialog (tkinter, and a display on Linux)?"""
+    """Can this computer show the system folder dialog (Windows PowerShell/Forms, tkinter, display on Linux)?"""
+    if sys.platform.startswith("win"):
+        return True
     if sys.platform.startswith("linux") and not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         return False
     try:
@@ -371,7 +373,7 @@ def create_app(data_dir: Optional[str] = None, token: Optional[str] = None, port
         args = [sys.executable, "--pick-folder"] if getattr(sys, "frozen", False) else \
             [sys.executable, "-m", "cctv_analysis.app", "--pick-folder"]
         try:
-            r = subprocess.run(args, capture_output=True, text=True, timeout=600)
+            r = subprocess.run(args, capture_output=True, text=True, timeout=120)
         except Exception:
             raise ApiError(501, "folder dialog not available – use the folder browser")
         if r.returncode == 3:

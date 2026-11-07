@@ -154,7 +154,9 @@ async function addSourcePath(p) {
   try { const r = await api("POST", caseApi("/sources"), { path: p }); C.data = r.case; renderCase(); toast("Source added: " + p); }
   catch (e) { toast(e.message, true); }
 }
-$("cs-add-src").addEventListener("click", () => { if (needCase()) pickFolder(addSourcePath); });
+$("cs-add-src").addEventListener("click", () => { if (needCase()) openBrowser(null, false, addSourcePath); });
+const csNat = $("cs-native-src");
+if (csNat) csNat.addEventListener("click", () => { if (needCase()) pickNativeFolder(addSourcePath); });
 $("cs-root-change").addEventListener("click", () => openBrowser(null, true, async (p) => {
   try { await api("PUT", "/api/settings", { cases_root: p }); C.id = ""; localStorage.removeItem("drishti-case"); $("cs-detail").classList.add("hidden"); loadCases(); toast("Cases folder: " + p); }
   catch (e) { toast(e.message, true); }
@@ -183,12 +185,44 @@ $("cs-audit").addEventListener("click", async () => {
 
 // ------------------------------------------------------------------ folders: picker, drag & drop
 async function pickFolder(cb) {
-  if (C.nativeDialog === undefined) {
-    try { C.nativeDialog = (await api("GET", "/api/fs/roots")).native_dialog; } catch (_) { C.nativeDialog = false; }
+  openBrowser(null, false, cb);
+}
+async function pickNativeFolder(cb) {
+  toast("Opening Windows File Explorer…");
+  try {
+    const r = await api("POST", "/api/fs/pick", {});
+    if (r.path) { cb(r.path); toast("Added folder: " + r.path); }
+  } catch (e) {
+    toast(e.message || "File Explorer dialog not available – opening folder browser", true);
+    openBrowser(null, false, cb);
   }
-  if (!C.nativeDialog) { openBrowser(null, false, cb); return; }            // no system dialog here: built-in browser
-  try { const r = await api("POST", "/api/fs/pick", {}); if (r.path) cb(r.path); }
-  catch (e) { if (e.status === 501) { C.nativeDialog = false; openBrowser(null, false, cb); } else toast(e.message, true); }
+}
+function promptFolderLocation(name, add) {
+  const existing = document.querySelector(".card.choose-drop");
+  if (existing) existing.remove();
+  const box = el("div", { class: "card choose choose-drop", style: "border: 2px solid #2563eb; background: #eff6ff; padding: 12px; margin: 10px 0; border-radius: 8px;" },
+    el("b", { style: "color: #1e3a8a; font-size: 1.05em;", text: `📁 Dropped folder: “${name}”` }),
+    el("p", { class: "small", style: "color: #475569; margin: 6px 0;", text: "Browser security blocks web pages from reading full drive paths directly. Confirm or paste the path on your PC, or click Browse:" }),
+    el("div", { class: "row", style: "display: flex; gap: 8px; align-items: center; flex-wrap: wrap;" },
+      el("input", { id: "p-drop-path", type: "text", style: "flex: 1; min-width: 260px; padding: 6px 8px;", placeholder: "e.g. C:\\Recordings\\" + name, value: "" }),
+      el("button", { type: "button", class: "primary", text: "Add this path", onclick: () => {
+        const p = $("p-drop-path").value.trim();
+        if (p) { box.remove(); add(p); toast("Added: " + p); } else toast("Please enter or paste a valid folder path", true);
+      }}),
+      el("button", { type: "button", text: "📁 Browse…", onclick: () => {
+        box.remove();
+        openBrowser(null, false, add);
+      }}),
+      el("button", { type: "button", text: "🖥️ File Explorer", onclick: () => {
+        box.remove();
+        pickNativeFolder(add);
+      }}),
+      el("button", { type: "button", text: "✕ Cancel", onclick: () => box.remove() })
+    )
+  );
+  $("q-drop").after(box);
+  const inp = $("p-drop-path");
+  if (inp) inp.focus();
 }
 function readAll(reader) {
   return new Promise((resolve) => { const out = []; const next = () => reader.readEntries(b => { if (!b.length) resolve(out); else { out.push(...b); next(); } }, () => resolve(out)); next(); });
@@ -208,18 +242,34 @@ async function sampleFiles(dir, max) {
 }
 async function dropped(ev, add) {
   ev.preventDefault(); ev.currentTarget.classList.remove("over");
-  const entries = [...(ev.dataTransfer.items || [])].map(i => i.webkitGetAsEntry ? i.webkitGetAsEntry() : null).filter(Boolean);
-  if (!entries.length) { toast("Drop folders (not files) – or use “Add folder…”.", true); return; }
+  const items = [...(ev.dataTransfer.items || [])];
+  const entries = items.map(i => i.webkitGetAsEntry ? i.webkitGetAsEntry() : null).filter(Boolean);
+  if (!entries.length) {
+    const rawFiles = [...(ev.dataTransfer.files || [])];
+    if (rawFiles.length) {
+      toast("Please drop a folder, or click '📁 Choose folder…' / '🖥️ File Explorer'.", true);
+    } else {
+      toast("Drop folders (not files) – or use “Choose folder…”.", true);
+    }
+    return;
+  }
   for (const ent of entries) {
     if (!ent.isDirectory) { toast(`${ent.name} is a file – drop the folder that holds the recordings.`, true); continue; }
+    toast(`Searching location for “${ent.name}”…`);
     const files = await sampleFiles(ent, 8);
-    if (!files.length) { toast(`${ent.name} is empty.`, true); continue; }
     try {
       const r = await api("POST", "/api/fs/locate", { name: ent.name, files });
-      if (r.candidates.length === 1) add(r.candidates[0]);
-      else if (r.candidates.length > 1) choosePath(ent.name, r.candidates, add);
-      else toast(`Could not find where “${ent.name}” is on this computer – use “Add folder…”.`, true);
-    } catch (e) { toast(e.message, true); }
+      if (r.candidates && r.candidates.length === 1) {
+        add(r.candidates[0]);
+        toast(`Added: ${r.candidates[0]}`);
+      } else if (r.candidates && r.candidates.length > 1) {
+        choosePath(ent.name, r.candidates, add);
+      } else {
+        promptFolderLocation(ent.name, add);
+      }
+    } catch (e) {
+      promptFolderLocation(ent.name, add);
+    }
   }
 }
 function choosePath(name, paths, add) {
@@ -248,7 +298,9 @@ function renderQuick() {
     el("td", {}, el("input", { value: f.clock_offset, class: "mono w-off", oninput: (e) => { f.clock_offset = e.target.value; } })),
     el("td", {}, el("button", { type: "button", text: "✕", title: "remove", onclick: () => { C.qFolders.splice(i, 1); renderQuick(); } })))));
 }
-$("q-add").addEventListener("click", () => pickFolder(addQuickFolder));
+$("q-add").addEventListener("click", () => openBrowser(null, false, addQuickFolder));
+const qNat = $("q-native");
+if (qNat) qNat.addEventListener("click", () => pickNativeFolder(addQuickFolder));
 $("q-run").addEventListener("click", async (ev) => {
   if (!C.qFolders.length) { toast("Add at least one seized folder.", true); return; }
   busy(ev.target, true); $("q-msg").textContent = "";

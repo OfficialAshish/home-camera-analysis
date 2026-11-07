@@ -507,6 +507,7 @@ $("fb-ok").addEventListener("click", () => {
   if (S.fbTarget) S.fbTarget.value = p; if (S.fbCb) S.fbCb(p);
 });
 $("fb-native").addEventListener("click", async () => {
+  toast("Opening Windows File Explorer…");
   try { const r = await api("POST", "/api/fs/pick", {}); if (r.path) { $("fb").classList.add("hidden"); if (S.fbTarget) S.fbTarget.value = r.path; if (S.fbCb) S.fbCb(r.path); } }
   catch (e) { toast(e.message, true); $("fb-native").disabled = e.status === 501; }
 });

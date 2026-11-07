@@ -14,6 +14,34 @@ import webbrowser
 
 def pick_folder() -> int:
     """Helper mode for the native folder dialog (exit 3 = no GUI toolkit available)."""
+    if sys.platform.startswith("win"):
+        try:
+            import subprocess
+            ps = (
+                "[void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); "
+                "$dlg = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$dlg.Description = 'Select CCTV Recordings Folder'; "
+                "$dlg.ShowNewFolderButton = $true; "
+                "$form = New-Object System.Windows.Forms.Form; "
+                "$form.TopMost = $true; $form.Width = 1; $form.Height = 1; "
+                "$form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen; "
+                "$form.ShowInTaskbar = $false; "
+                "$form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized; "
+                "$form.Show(); $form.BringToFront(); $form.Activate(); "
+                "$res = $dlg.ShowDialog($form); "
+                "$form.Close(); "
+                "if ($res -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dlg.SelectedPath) }"
+            )
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+                capture_output=True, text=True, timeout=120
+            )
+            if r.returncode == 0:
+                print(r.stdout.strip())
+                return 0
+        except Exception:
+            pass
+
     try:
         import tkinter
         from tkinter import filedialog
@@ -21,9 +49,14 @@ def pick_folder() -> int:
         return 3
     try:
         root = tkinter.Tk()
-        root.withdraw()
+        root.geometry("0x0+0+0")
+        root.overrideredirect(True)
+        root.deiconify()
+        root.lift()
+        root.focus_force()
         root.attributes("-topmost", True)
-        path = filedialog.askdirectory(title="Choose a folder")
+        root.update()
+        path = filedialog.askdirectory(parent=root, title="Select CCTV Recordings Folder")
         root.destroy()
     except Exception:
         return 3

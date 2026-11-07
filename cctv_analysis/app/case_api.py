@@ -130,14 +130,62 @@ def _public_point(p: dict) -> dict:
     return out
 
 
-def locate_folder(name: str, files: List[dict], roots: List[str], max_dirs: int = 20000,
+def locate_folder(name: str, files: List[dict], roots: List[str], max_dirs: int = 25000,
                   seconds: float = 6.0) -> List[str]:
     """Absolute paths of folders called `name` that contain the dropped files (same relative
     path and size). A browser never reveals where a dropped folder is; this finds it by content."""
     deadline = time.monotonic() + seconds
-    want = [(f["rel"], int(f["size"])) for f in files[:8]]
+    want = [(f["rel"], int(f["size"])) for f in files[:8] if isinstance(f, dict) and "rel" in f and "size" in f]
     hits: List[str] = []
     seen = set()
+
+    def check_match(dir_path: str) -> bool:
+        if not os.path.isdir(dir_path):
+            return False
+        if not want:
+            return os.path.basename(dir_path.rstrip("\\/")) == name
+        try:
+            return all(
+                os.path.isfile(os.path.join(dir_path, rel)) and os.path.getsize(os.path.join(dir_path, rel)) == size
+                for rel, size in want
+            )
+        except OSError:
+            return False
+
+    # FAST PATH 1: Direct child of any search root (e.g. Desktop\name or P:\CODE\...\name)
+    for r in roots:
+        direct = os.path.join(r, name)
+        real = os.path.realpath(direct)
+        if real not in seen and check_match(direct):
+            seen.add(real)
+            hits.append(direct)
+            if len(hits) >= 5:
+                return hits
+
+    # FAST PATH 2: Immediate 1-level subdirectories of top roots (Desktop, Downloads, CWD)
+    priority_roots = [r for r in roots[:6] if os.path.isdir(r)]
+    for r in priority_roots:
+        try:
+            with os.scandir(r) as it:
+                for de in it:
+                    if de.is_dir(follow_symlinks=False) and not de.name.startswith((".", "$")):
+                        sub_target = os.path.join(de.path, name)
+                        real = os.path.realpath(sub_target)
+                        if real not in seen and check_match(sub_target):
+                            seen.add(real)
+                            hits.append(sub_target)
+                            if len(hits) >= 5:
+                                return hits
+        except OSError:
+            continue
+
+    # GENERAL PATH: Breadth-first search with smart exclusion of slow/irrelevant trees
+    skip_names = {
+        "node_modules", "windows", "program files", "program files (x86)", "appdata",
+        "application data", "local settings", "proc", "sys", "system volume information",
+        "$recycle.bin", "__pycache__", "site-packages", "venv", ".venv", "env",
+        ".git", ".gemini", ".vscode", ".idea", ".planning", ".cache", ".npm", ".pip"
+    }
     queue = collections.deque((os.path.abspath(r), 0) for r in roots if r and os.path.isdir(r))
     visited = 0
     while queue and visited < max_dirs and time.monotonic() < deadline:
@@ -147,9 +195,7 @@ def locate_folder(name: str, files: List[dict], roots: List[str], max_dirs: int 
             continue
         seen.add(real)
         visited += 1
-        if os.path.basename(d.rstrip("\\/")) == name and want and all(
-                os.path.isfile(os.path.join(d, rel)) and os.path.getsize(os.path.join(d, rel)) == size
-                for rel, size in want):
+        if os.path.basename(d.rstrip("\\/")) == name and check_match(d):
             hits.append(d)
             if len(hits) >= 5:
                 break
@@ -159,8 +205,8 @@ def locate_folder(name: str, files: List[dict], roots: List[str], max_dirs: int 
         try:
             with os.scandir(d) as it:
                 for de in it:
-                    if de.name.startswith((".", "$")) or de.name in ("node_modules", "Windows", "Program Files",
-                                                                       "Program Files (x86)", "AppData", "proc", "sys"):
+                    low = de.name.lower()
+                    if low.startswith((".", "$")) or low in skip_names:
                         continue
                     try:
                         if de.is_dir(follow_symlinks=False):
@@ -176,12 +222,24 @@ def search_roots(recent: List[str]) -> List[str]:
     import string
     import sys
     home = os.path.expanduser("~")
-    roots = [os.path.dirname(p) for p in recent if p] + [os.path.join(home, x) for x in
-                                                          ("Desktop", "Downloads", "Documents", "Videos")] + [home]
+    cwd = os.getcwd()
+    cwd_parent = os.path.dirname(cwd)
+    roots = []
+    # 1. Current workspace and its parent
+    roots.extend([cwd, cwd_parent])
+    # 2. Recent locations
+    for p in recent:
+        if p:
+            roots.append(p if os.path.isdir(p) else os.path.dirname(p))
+    # 3. User standard profile folders
+    roots.extend([os.path.join(home, x) for x in ("Desktop", "Downloads", "Documents", "Videos")])
+    # 4. Available drives
     if sys.platform.startswith("win"):
         roots += [f"{c}:\\" for c in string.ascii_uppercase if os.path.exists(f"{c}:\\")]
     else:
         roots += [p for p in ("/media", "/mnt", "/Volumes", "/run/media") if os.path.isdir(p)]
+    # 5. User home
+    roots.append(home)
     out = []
     for r in roots:
         if r and os.path.isdir(r) and r not in out:

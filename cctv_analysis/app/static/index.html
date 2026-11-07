@@ -38,8 +38,11 @@
       <h2>1 · Seized recordings</h2>
       <div id="q-drop" class="dropzone">
         <b>Drop the DVR / NVR / pen-drive folders here</b>
-        <div class="row center"><button id="q-add" type="button">Add folder…</button></div>
-        <div class="hint">One folder per seized device. Nothing is ever written into these folders.</div>
+        <div class="row center">
+          <button id="q-add" type="button" class="primary">📁 Choose folder…</button>
+          <button id="q-native" type="button">🖥️ Windows File Explorer</button>
+        </div>
+        <div class="hint">One folder per seized device. You can browse drives, paste folder path, or drag & drop.</div>
       </div>
       <table id="q-folders" class="hidden"><thead><tr><th>Name</th><th>Folder</th><th>Clock correction</th><th></th></tr></thead><tbody></tbody></table>
       <p class="hint">Clock correction: if the DVR showed 21:25 when the true time was 21:14, enter <span class="mono">-00:11:00</span> (DVR 11 minutes fast). Leave 0 if unknown – it can be changed later without analysing again.</p>
@@ -89,7 +92,11 @@
       <div class="row"><button id="cs-save" type="button">Save case details</button></div>
       <h3>Sources (seized folders)</h3>
       <div id="cs-sources"></div>
-      <div class="row"><button id="cs-add-src" type="button">Add folder…</button><span class="hint">or drop folders on this card</span></div>
+      <div class="row">
+        <button id="cs-add-src" type="button" class="primary">📁 Choose folder…</button>
+        <button id="cs-native-src" type="button">🖥️ Windows File Explorer</button>
+        <span class="hint">or drop folders on this card</span>
+      </div>
       <h3>Analyse</h3>
       <div class="row">
         <select id="cs-preset"><option value="balanced">Balanced (recommended)</option><option value="fast">Fast</option><option value="accurate">Accurate (slow)</option></select>
