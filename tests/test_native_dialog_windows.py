@@ -1,7 +1,8 @@
 """The Windows folder dialog really opens, in front, and returns the chosen folder (Windows only;
 run by the windows-app CI job). Windows UI Automation finds the dialog the helper opened, checks it
 is on screen and clicks OK on the pre-selected folder – the same path the app's
-/api/fs/pick takes."""
+/api/fs/pick takes. A dialog that does not appear fails the test (with the windows that were on
+the screen instead) and the helper is ended, so the job never waits for it."""
 import os
 import subprocess
 import sys
@@ -19,21 +20,27 @@ Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 $A = [System.Windows.Automation.AutomationElement]
 $T = [System.Windows.Automation.TreeScope]
-# the dialog is owned by the helper's (invisible) owner window, and UI Automation lists owned
-# windows under their owner - so it is searched among all descendants, not only top-level windows
-$cond = New-Object System.Windows.Automation.AndCondition(
-  (New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, "Browse For Folder")),
-  (New-Object System.Windows.Automation.PropertyCondition($A::ControlTypeProperty, [System.Windows.Automation.ControlType]::Window)))
+$C = [System.Windows.Automation.PropertyCondition]
+# the dialog belongs to the app's PowerShell helper (its command line holds the helper script,
+# which creates the folder-browser dialog - the pattern is split so this script does not match itself);
+# a dialog window has the class #32770 and may be listed under its (invisible) owner window
+$pat = '*FolderBrowser' + 'Dialog*'
 $deadline = (Get-Date).AddSeconds(90)
 while ((Get-Date) -lt $deadline) {
-  $win = $A::RootElement.FindFirst($T::Descendants, $cond)
-  if ($win) {
-    $r = $win.Current.BoundingRectangle
-    Write-Output ("FOUND {0}x{1} offscreen={2}" -f $r.Width, $r.Height, $win.Current.IsOffscreen)
-    $okc = New-Object System.Windows.Automation.PropertyCondition($A::NameProperty, "OK")
-    $ok = $win.FindFirst($T::Descendants, $okc)
-    $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
-    exit 0
+  $p = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+       Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like $pat } | Select-Object -First 1
+  if ($p) {
+    $tops = $A::RootElement.FindAll($T::Children, (New-Object $C($A::ProcessIdProperty, [int]$p.ProcessId)))
+    foreach ($w in $tops) {
+      $dlg = if ($w.Current.ClassName -eq '#32770') { $w } else { $w.FindFirst($T::Children, (New-Object $C($A::ClassNameProperty, '#32770'))) }
+      if ($dlg) {
+        $r = $dlg.Current.BoundingRectangle
+        Write-Output ("FOUND '{0}' {1}x{2} offscreen={3}" -f $dlg.Current.Name, $r.Width, $r.Height, $dlg.Current.IsOffscreen)
+        $ok = $dlg.FindFirst($T::Descendants, (New-Object $C($A::AutomationIdProperty, '1')))     # IDOK
+        $ok.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
+        exit 0
+      }
+    }
   }
   Start-Sleep -Milliseconds 500
 }
@@ -41,8 +48,16 @@ Write-Output "NOT FOUND"
 # what was on the screen instead (for the CI log)
 $A::RootElement.FindAll($T::Children, [System.Windows.Automation.Condition]::TrueCondition) |
   ForEach-Object { Write-Output ("  window: '{0}' class={1} pid={2}" -f $_.Current.Name, $_.Current.ClassName, $_.Current.ProcessId) }
-Get-Process powershell -ErrorAction SilentlyContinue | ForEach-Object { Write-Output ("  powershell pid={0} window='{1}'" -f $_.Id, $_.MainWindowTitle) }
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+  ForEach-Object { Write-Output ("  powershell pid={0} helper={1}" -f $_.ProcessId, ($_.ProcessId -ne $PID -and $_.CommandLine -like $pat)) }
 exit 1
+"""
+
+# ends a dialog helper that is still open (a failed run must not keep the CI job waiting an hour)
+CLEANUP = r"""
+$pat = '*FolderBrowser' + 'Dialog*'
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+  Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like $pat } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 """
 
 
@@ -58,14 +73,18 @@ def test_the_windows_folder_dialog_opens_on_screen_and_returns_the_chosen_folder
 
     def ask():
         out["r"] = c.post("/api/fs/pick", json={"title": "Drishti test", "start": str(target)}, headers=H)
-    t = threading.Thread(target=ask)
+    t = threading.Thread(target=ask, daemon=True)
     t.start()
-    ui = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ACCEPT],
-                        capture_output=True, text=True, timeout=150)
-    t.join(150)
+    try:
+        ui = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ACCEPT],
+                            capture_output=True, text=True, timeout=150)
+        t.join(60)
+    finally:
+        subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", CLEANUP],
+                       capture_output=True, timeout=60)
     print(ui.stdout, ui.stderr)
     assert ui.returncode == 0 and "FOUND" in ui.stdout, ui.stdout + ui.stderr
-    assert "offscreen=False" in ui.stdout                    # visible, not hidden behind a minimised owner
+    assert "offscreen=False" in ui.stdout and "Browse For Folder" in ui.stdout   # on screen, not minimised
     r = out["r"]
     assert r.status_code == 200, r.get_json()
     assert os.path.normcase(r.get_json()["path"]) == os.path.normcase(str(target))
