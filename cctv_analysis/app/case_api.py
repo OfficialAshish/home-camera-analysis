@@ -1028,14 +1028,14 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         res: Dict[str, object] = {}
         try:
             txt, conf = readers.get("plate").read(out)
-            res["plate_reader"] = {"text": txt, "confidence": round(float(conf), 3)}
+            res["plate_reader"] = {"text": txt, "confidence": round(float(conf), 3) if txt else 0.0}
         except Exception as e:
             res["plate_reader"] = {"text": "", "confidence": 0.0, "error": str(e)[:200]}
         try:
             import cv2
             reads = readers.get("text").read(cv2.copyMakeBorder(out, 16, 16, 16, 16, cv2.BORDER_REPLICATE))
             text = " ".join(t for t, _ in reads)
-            res["text_reader"] = {"text": text, "confidence": round(min((float(cf) for _, cf in reads), default=0.0), 3)}
+            res["text_reader"] = {"text": text, "confidence": round(min(float(cf) for _, cf in reads), 3) if text else 0.0}
         except Exception as e:
             res["text_reader"] = {"text": "", "confidence": 0.0, "error": str(e)[:200]}
         cands = [x["text"] for x in (res["plate_reader"], res["text_reader"]) if isinstance(x, dict) and x.get("text")]

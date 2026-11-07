@@ -626,6 +626,7 @@ function makeViewer(box, img) {
   };
   v.zoomAt = (z, cx, cy) => { z = Math.max(0.02, Math.min(64, z)); v.tx = cx - (cx - v.tx) * z / v.z; v.ty = cy - (cy - v.ty) * z / v.z; v.z = z; apply(); };
   v.zoomTo = (z) => v.zoomAt(z, box.clientWidth / 2, box.clientHeight / 2);
+  v.centerOn = (x, y) => { v.tx = box.clientWidth / 2 - x * v.z; v.ty = box.clientHeight / 2 - y * v.z; apply(); };
   v.toImage = (clientX, clientY) => { const r = box.getBoundingClientRect(); return [(clientX - r.left - v.tx) / v.z, (clientY - r.top - v.ty) / v.z]; };
   v.toScreen = (x, y) => [v.tx + x * v.z, v.ty + y * v.z];
   v.size2 = () => [img.naturalWidth, img.naturalHeight];
@@ -661,6 +662,8 @@ V1.onchange = () => { drawRoi(); showZoom(); };
 V2.onchange = () => { drawCorners(); showZoom(); };
 document.querySelectorAll(".zoombar [data-zoom]").forEach(b => b.addEventListener("click", () => {
   for (const v of [V1, V2]) { if (b.dataset.zoom === "fit") v.fit(); else v.zoomTo(parseFloat(b.dataset.zoom)); }
+  const r = C.studio && C.studio.roi;                // the original zooms into the selected region, not its centre
+  if (r && b.dataset.zoom !== "fit") V1.centerOn(r[0] + r[2] / 2, r[1] + r[3] / 2);
 }));
 $("fx-pixels").addEventListener("change", (e) => { for (const id of ["fx-v1", "fx-v2"]) $(id).classList.toggle("pixels", e.target.checked); });
 for (const id of ["fx-v1", "fx-v2"]) $(id).classList.toggle("pixels", $("fx-pixels").checked);
@@ -856,11 +859,12 @@ $("fx-read").addEventListener("click", async (ev) => {
   busy(ev.target, true); clear($("fx-read-out"), "reading…");
   try {
     const r = await api("POST", caseApi("/enhance/read"), studioBody());
-    const best = (r.plate_format.find(x => x.fit === 1) || {}).fits_as || r.plate_reader.text || r.text_reader.text || "";
-    const parts = [el("span", { text: `plate reader: ${r.plate_reader.text || "–"} (${r.plate_reader.confidence}) · text reader: ${r.text_reader.text || "–"} (${r.text_reader.confidence})` +
+    const best = (r.plate_format.find(x => x.fit === 1) || {}).fits_as || "";      // only a read that fits a plate format
+    const said = (x) => x.text ? `${x.text} (confidence ${x.confidence})` : "nothing read";
+    const parts = [el("span", { text: `plate reader: ${said(r.plate_reader)} · text reader: ${said(r.text_reader)}` +
       (r.plate_format.length ? ` · Indian format: ${r.plate_format.map(x => `${x.read} → ${x.fits_as || "no fit"}`).join(", ")}` : "") })];
     if (C.studio.kind === "plate" && C.studio.track !== null) {
-      const inp = el("input", { class: "mono plate-in", value: best, maxlength: "15" });
+      const inp = el("input", { class: "mono plate-in", value: best, maxlength: "15", placeholder: "type the plate as you read it" });
       parts.push(el("div", { class: "row" }, "Plate as you read it ", inp, el("button", { type: "button", class: "primary", text: "Save as the plate reading", onclick: async (e2) => {
         busy(e2.target, true);
         try {
