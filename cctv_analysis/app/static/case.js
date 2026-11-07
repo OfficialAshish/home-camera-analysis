@@ -369,16 +369,21 @@ async function openCaseEvent(sid, eid) {
       el("button", { type: "button", class: "primary", text: "Open in Forensic Studio at this moment", onclick: () => openStudio(e, video.currentTime || e.offset_start) }),
       el("button", { type: "button", text: "Add to court bundle", onclick: () => addToBundle([{ source_id: sid, event_id: eid, label: `${e.source_label}/${e.camera} ${e.calibrated_start || ""}` }]) })),
     e.flags.length ? el("ul", {}, e.flags.map(f => el("li", {}, el("b", { text: f.flag }), ` (+${f.points}) ${f.reason}`))) : null,
-    people.length ? el("div", {}, el("h3", { text: "People in this event" }), el("div", { class: "grid" }, people.map(t => el("div", { class: "tile" },
+    people.length ? el("div", {}, el("h3", { text: "People and vehicles in this event" }), el("div", { class: "grid" }, people.map(t => el("div", { class: "tile", "data-track": String(t.track) },
       t.person ? el("img", { src: caseFile(t.person), alt: "" }) : null, t.face ? el("img", { src: caseFile(t.face), alt: "" }) : null,
       el("div", { text: `${t.cls} #${t.track}${t.identity ? " · " + t.identity : ""}` }),
+      el("div", { class: "row center" }, t.cls === "person" ? [
+        el("button", { type: "button", class: "fx-open", text: "Enhance face", title: "Forensic Studio: the head region, super-resolution from several frames", onclick: () => openStudioAt(e, "face", t.track) }),
+        el("button", { type: "button", class: "fx-open", text: "Enhance person", title: "Forensic Studio: this person's region", onclick: () => openStudioAt(e, "person", t.track) })] :
+        el("button", { type: "button", class: "fx-open", text: `Enhance ${t.cls}`, title: "Forensic Studio: this vehicle's region", onclick: () => openStudioAt(e, "vehicle", t.track) })),
       t.person && t.cls === "person" ? el("button", { type: "button", class: "primary", text: "Find this person on all cameras",
         onclick: () => runSightings({ kind: "appearance", min_score: 0.7, query: { source_id: sid, event_id: eid, track: t.track } }, `Person #${t.track} of ${e.source_label}/${e.camera}`) }) : null,
       t.identity_id ? el("button", { type: "button", text: `Follow face ${t.identity}`,
         onclick: () => runSightings(/^P\d{4,}$/.test(t.identity) ? { kind: "face", value: t.identity_id, query: { source_id: sid } } : { kind: "face", value: t.identity }, `Face ${t.identity}`) }) : null)))) : null,
     e.plates.length ? el("div", {}, el("h3", { text: "Number plates" }), el("div", { class: "grid" }, e.plates.map(p =>
       plateTile(p, caseFile, casePlateSaver(sid, () => openCaseEvent(sid, eid)),
-        [p.text ? el("button", { type: "button", text: "Find this vehicle", onclick: () => runSightings({ kind: "plate", value: p.text, fuzzy: true }, `Vehicle ${p.text}`) }) : null])))) : null,
+        [el("button", { type: "button", class: "primary fx-open", text: "Enhance plate in Forensic Studio", onclick: () => openStudioAt(e, "plate", p.track) }),
+         p.text ? el("button", { type: "button", text: "Find this vehicle", onclick: () => runSightings({ kind: "plate", value: p.text, fuzzy: true }, `Vehicle ${p.text}`) }) : null])))) : null,
     el("div", { class: "gallery" }, e.snapshots.map(s => el("a", { href: caseFile(s.annotated || s.raw), target: "_blank", rel: "noopener" },
       el("img", { src: caseFile(s.annotated || s.raw), title: s.time || "", loading: "lazy" })))));
   d.scrollIntoView({ behavior: "smooth" });
@@ -433,7 +438,10 @@ async function unreadPlates() {
     clear($("srch-out"), el("p", { class: "hint", text: r.plates.length ? `${r.plates.length} vehicle(s) whose plate neither the machine (confidently) nor an examiner has read, in calibrated time order. Type what you can read, or enhance the plate in the Forensic Studio first.` : "Every plate of the case was read (by the machine or an examiner)." }),
       el("div", { class: "grid" }, r.plates.map(p => plateTile(p, caseFile, casePlateSaver(p.source_id, unreadPlates),
         [el("div", { class: "small", text: p.source_label }),
-         el("button", { type: "button", text: "Open event", onclick: () => openCaseEvent(p.source_id, p.event_id) })]))));
+         el("button", { type: "button", text: "Open event", onclick: () => openCaseEvent(p.source_id, p.event_id) }),
+         el("button", { type: "button", class: "primary fx-open", text: "Enhance plate", onclick: async () => {
+           try { const ev = (await api("GET", caseApi(`/events/${encodeURIComponent(p.source_id)}/${encodeURIComponent(p.event_id)}`))).event; openStudioAt(ev, "plate", p.track); }
+           catch (e) { toast(e.message, true); } } })]))));
   } catch (e) { toast(e.message, true); }
 }
 $("ps-go").addEventListener("click", () => { if (needCase()) runSightings({ kind: "plate", value: $("ps-q").value.trim(), fuzzy: $("ps-fuzzy").checked }, `Vehicle ${$("ps-q").value.trim().toUpperCase()}`); });
@@ -517,23 +525,148 @@ $("jr-reel").addEventListener("click", async (ev) => {
 $("jr-bundle").addEventListener("click", () => addToBundle(C.points.filter(p => p.on).map(p => ({ source_id: p.source_id, event_id: p.event_id, label: `${p.source_label}/${p.camera} ${p.calibrated_time || ""}` }))));
 
 // ------------------------------------------------------------------ Forensic Studio
+// Two zoomable viewers (the original frame, the enhanced picture): the mouse wheel zooms at the
+// pointer, dragging moves, the zoom bar sets Fit / 1:1 / 2× … 16×. "Show real pixels" draws every
+// pixel as a square (no smoothing) – an 8× view then shows what the recording holds, not the
+// browser's interpolation. Coordinates are always in pixels of the picture (natural size).
+function makeViewer(box, img) {
+  const v = { z: 1, tx: 0, ty: 0, size: "", onchange: null, mode: "pan", onpick: null };
+  const apply = () => { img.style.transform = `translate(${v.tx}px, ${v.ty}px) scale(${v.z})`; if (v.onchange) v.onchange(); };
+  v.fit = () => {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (!w || !h || !box.clientWidth || !box.clientHeight) return;
+    v.z = Math.min(box.clientWidth / w, box.clientHeight / h); v.tx = (box.clientWidth - w * v.z) / 2; v.ty = (box.clientHeight - h * v.z) / 2; apply();
+  };
+  v.zoomAt = (z, cx, cy) => { z = Math.max(0.02, Math.min(64, z)); v.tx = cx - (cx - v.tx) * z / v.z; v.ty = cy - (cy - v.ty) * z / v.z; v.z = z; apply(); };
+  v.zoomTo = (z) => v.zoomAt(z, box.clientWidth / 2, box.clientHeight / 2);
+  v.toImage = (clientX, clientY) => { const r = box.getBoundingClientRect(); return [(clientX - r.left - v.tx) / v.z, (clientY - r.top - v.ty) / v.z]; };
+  v.toScreen = (x, y) => [v.tx + x * v.z, v.ty + y * v.z];
+  v.size2 = () => [img.naturalWidth, img.naturalHeight];
+  box.addEventListener("wheel", (e) => { e.preventDefault(); const r = box.getBoundingClientRect(); v.zoomAt(v.z * (e.deltaY < 0 ? 1.25 : 0.8), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  let drag = null;
+  box.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || !img.naturalWidth) return;
+    box.setPointerCapture(e.pointerId);
+    drag = { x: e.clientX, y: e.clientY, tx: v.tx, ty: v.ty, moved: false };
+    if (v.mode === "pan") box.classList.add("panning");
+    if (v.mode === "region" && v.onpick) v.onpick("start", v.toImage(e.clientX, e.clientY));
+  });
+  box.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    drag.moved = drag.moved || Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3;
+    if (v.mode === "pan" || (v.mode === "point" && drag.moved)) { v.tx = drag.tx + e.clientX - drag.x; v.ty = drag.ty + e.clientY - drag.y; apply(); }
+    else if (v.mode === "region" && v.onpick) v.onpick("move", v.toImage(e.clientX, e.clientY));
+  });
+  const end = (e) => {
+    if (!drag) return;
+    const d = drag; drag = null; box.classList.remove("panning");
+    if (v.mode === "region" && v.onpick) v.onpick("end", v.toImage(e.clientX, e.clientY));
+    else if (v.mode === "point" && v.onpick && !d.moved) v.onpick("point", v.toImage(e.clientX, e.clientY));
+  };
+  box.addEventListener("pointerup", end); box.addEventListener("pointercancel", () => { drag = null; box.classList.remove("panning"); });
+  img.addEventListener("load", () => { const s = `${img.naturalWidth}x${img.naturalHeight}`; if (s !== v.size) { v.size = s; v.fit(); } else apply(); });
+  new ResizeObserver(() => { if (img.naturalWidth) v.fit(); }).observe(box);
+  return v;
+}
+const V1 = makeViewer($("fx-v1"), $("fx-orig")), V2 = makeViewer($("fx-v2"), $("fx-out"));
+function showZoom() { $("fx-zoom").textContent = `original ${Math.round(V1.z * 100)} % · enhanced ${Math.round(V2.z * 100)} %`; }
+V1.onchange = () => { drawRoi(); showZoom(); };
+V2.onchange = () => { drawCorners(); showZoom(); };
+document.querySelectorAll(".zoombar [data-zoom]").forEach(b => b.addEventListener("click", () => {
+  for (const v of [V1, V2]) { if (b.dataset.zoom === "fit") v.fit(); else v.zoomTo(parseFloat(b.dataset.zoom)); }
+}));
+$("fx-pixels").addEventListener("change", (e) => { for (const id of ["fx-v1", "fx-v2"]) $(id).classList.toggle("pixels", e.target.checked); });
+for (const id of ["fx-v1", "fx-v2"]) $(id).classList.toggle("pixels", $("fx-pixels").checked);
+
+// the region (plate, face, vehicle): dragged on the original, in pixels of the recording's frame
+function placeBox(node, x, y, w, h, v) {
+  const [sx, sy] = v.toScreen(x, y);
+  node.style.left = sx + "px"; node.style.top = sy + "px"; node.style.width = (w * v.z) + "px"; node.style.height = (h * v.z) + "px";
+}
+function drawRoi() {
+  const r = C.studio && C.studio.roi, box = $("fx-roibox");
+  box.classList.toggle("hidden", !r);
+  if (r) placeBox(box, r[0], r[1], r[2], r[3], V1);
+  $("fx-roi-text").textContent = r ? `x ${r[0]}, y ${r[1]}, ${r[2]} × ${r[3]} px` : "whole frame";
+}
+let roiStart = null;
+V1.onpick = (phase, [x, y]) => {
+  const [W, H] = V1.size2();
+  x = Math.max(0, Math.min(W, x)); y = Math.max(0, Math.min(H, y));
+  if (phase === "start") { roiStart = [x, y]; $("fx-drag").classList.remove("hidden"); }
+  const x0 = Math.min(roiStart[0], x), y0 = Math.min(roiStart[1], y), w = Math.abs(x - roiStart[0]), h = Math.abs(y - roiStart[1]);
+  placeBox($("fx-drag"), x0, y0, w, h, V1);
+  if (phase === "end") {
+    $("fx-drag").classList.add("hidden"); V1.mode = "pan"; $("fx-v1").classList.remove("picking");
+    if (w < 4 || h < 4) { toast("Drag a larger region (at least 4 × 4 pixels).", true); return; }
+    setRoi([Math.round(x0), Math.round(y0), Math.round(w), Math.round(h)]);
+  }
+};
+function setRoi(r) {
+  C.studio.roi = r; drawRoi();
+  if (!r && $("fx-mode").value === "sr") $("fx-mode").value = "frame";
+  modeUi(); preview();
+}
+$("fx-roi-pick").addEventListener("click", () => {
+  if (!C.studio) { toast("Open an event first.", true); return; }
+  V1.mode = "region"; $("fx-v1").classList.add("picking"); toast("Drag a rectangle around the plate, face or vehicle on the original.");
+});
+$("fx-roi-clear").addEventListener("click", () => { if (C.studio) setRoi(null); });
+
+// where the picture comes from: one frame, frames aligned and combined, or super-resolution of the region
+const FRAME_CHOICES = { stack: [3, 5, 7, 9, 13, 15], sr: [5, 9, 13, 17, 25] };
+function modeUi() {
+  const mode = $("fx-mode").value;
+  document.querySelectorAll(".fx-multi").forEach(n => n.classList.toggle("hidden", mode === "frame"));
+  document.querySelectorAll(".fx-sr").forEach(n => n.classList.toggle("hidden", mode !== "sr"));
+  if (mode !== "frame") {
+    const keep = parseInt($("fx-n").value, 10), opts = FRAME_CHOICES[mode];
+    const pick = opts.includes(keep) ? keep : opts[Math.min(3, opts.length - 1)];
+    clear($("fx-n"), opts.map(n => el("option", { value: String(n), text: String(n), selected: n === pick })));
+  }
+}
+$("fx-mode").addEventListener("change", () => {
+  if ($("fx-mode").value === "sr" && !(C.studio && C.studio.roi)) toast("Super-resolution works on a region: select the plate or face first.", true);
+  modeUi(); preview();
+});
+for (const id of ["fx-n", "fx-factor", "fx-motion"]) $(id).addEventListener("change", () => preview());
+
 async function loadFilters() {
   if (C.filters) return;
   C.filters = (await api("GET", "/api/enhance/filters")).filters;
   clear($("fx-op"), Object.keys(C.filters).map(k => el("option", { value: k, text: k })));
 }
-function openStudio(e, t) {
-  C.studio = { source_id: e.source_id, event_id: e.event_id, label: `${e.source_label} / ${e.camera}`, video: e.video };
-  $("fx-t").value = (Math.round((t || 0) * 100) / 100).toFixed(2);
-  showTab("studio"); loadFrame();
+// open the Studio on an event at a time; `focus` = {roi, kind, track} from "Enhance in Forensic Studio"
+function openStudio(e, t, focus) {
+  C.studio = { source_id: e.source_id, event_id: e.event_id, label: `${e.source_label} / ${e.camera}`, video: e.video,
+               fps: e.fps || 25, roi: focus ? focus.roi : null, kind: focus ? focus.kind : "", track: focus ? focus.track : null };
+  $("fx-t").value = (Math.round((t || 0) * 1000) / 1000).toFixed(3);
+  $("fx-mode").value = focus && (focus.kind === "plate" || focus.kind === "face") ? "sr" : "frame";
+  $("fx-prompt").value = focus && focus.kind === "plate" ? $("fx-prompt-preset").options[0].value :
+    focus && (focus.kind === "person" || focus.kind === "face") ? $("fx-prompt-preset").options[1].value :
+    focus && focus.kind === "vehicle" ? $("fx-prompt-preset").options[2].value : $("fx-prompt").value;
+  clear($("fx-read-out")); clear($("fx-ask-out"));
+  modeUi(); drawRoi(); showTab("studio"); loadFrame();
 }
-function cleanChain() {      // a Perspective step takes part once its four corners are picked
-  return C.chain.filter(s => s.op !== "Perspective" || (s.points && s.points.length === 4)).map(({ _pts, ...s }) => s);
+async function openStudioAt(e, kind, track) {
+  try {
+    const q = new URLSearchParams({ source: e.source_id, event: e.event_id, track: String(track), kind });
+    const r = await api("GET", caseApi("/roi?" + q));
+    openStudio(e, r.t, { roi: r.roi, kind, track });
+  } catch (err) { toast(err.message + " – opening the event's first frame; select the region yourself.", true); openStudio(e, e.offset_start, { roi: null, kind, track }); }
+}
+function pendingCorners() { return C.chain.findIndex(s => s.op === "Perspective" && !s.points); }
+function cleanChain() {      // while the corners of a Perspective step are picked, the picture shows the steps before it
+  const p = pendingCorners();
+  return (p >= 0 ? C.chain.slice(0, p) : C.chain).map(({ _pts, ...s }) => s);
 }
 function studioBody(extra) {
-  const n = parseInt($("fx-n").value, 10);
-  return { source_id: C.studio.source_id, event_id: C.studio.event_id, t: parseFloat($("fx-t").value) || 0, chain: cleanChain(),
-    stack: n > 1 ? { frames: n, method: $("fx-method").value, motion: $("fx-motion").value } : undefined, ...extra };
+  const s = C.studio, mode = $("fx-mode").value, n = parseInt($("fx-n").value, 10);
+  const b = { source_id: s.source_id, event_id: s.event_id, t: parseFloat($("fx-t").value) || 0, chain: cleanChain() };
+  if (s.roi) b.roi = s.roi;
+  if (mode === "stack") b.stack = { frames: n, method: "median", motion: $("fx-motion").value };
+  if (mode === "sr") b.sr = { frames: n, factor: parseInt($("fx-factor").value, 10), motion: $("fx-motion").value };
+  return { ...b, ...extra };
 }
 function loadFrame() {
   if (!C.studio) { toast("Open an event first and choose “Open in Forensic Studio”.", true); return; }
@@ -542,28 +675,55 @@ function loadFrame() {
   preview();
 }
 $("fx-load").addEventListener("click", loadFrame);
-for (const id of ["fx-n", "fx-method", "fx-motion"]) $(id).addEventListener("change", () => preview());
+$("fx-t").addEventListener("change", loadFrame);
+for (const [id, d] of [["fx-prev", -1], ["fx-next", 1]]) $(id).addEventListener("click", () => {
+  if (!C.studio) return;
+  $("fx-t").value = Math.max(0, (parseFloat($("fx-t").value) || 0) + d / C.studio.fps).toFixed(3); loadFrame();
+});
 let previewTimer = null;
 function preview() {
   clearTimeout(previewTimer);
   previewTimer = setTimeout(async () => {
     if (!C.studio) return;
+    if ($("fx-mode").value === "sr" && !C.studio.roi) { $("fx-log").textContent = "select the region (Select region…) for super-resolution"; return; }
     const n = nextSeq("preview");
     $("fx-log").textContent = "working…";
     try {
       const r = await api("POST", caseApi("/enhance/preview"), studioBody());
       if (stale("preview", n)) return;
       $("fx-out").src = r.image;
-      $("fx-log").textContent = r.log + (r.aligned ? ` · ${r.aligned} frame(s) aligned` : "") + ` · ${r.width}×${r.height}`;
+      const p = pendingCorners();
+      $("fx-log").textContent = r.log + (r.aligned ? ` · ${r.aligned} frame(s) aligned` : "") + ` · ${r.width}×${r.height}` +
+        (p >= 0 ? ` · click the four corners of the plate / sign on the enhanced picture (${(C.chain[p]._pts || []).length} of 4)` : "");
     } catch (e) { if (!stale("preview", n)) $("fx-log").textContent = e.message; }
-  }, 350);
+  }, 300);
 }
+// Perspective: the four corners are clicked on the enhanced picture (it shows the steps before Perspective)
+function drawCorners() {
+  const v2 = $("fx-v2");
+  v2.querySelectorAll(".corner").forEach(n => n.remove());
+  const p = pendingCorners();
+  if (p < 0) return;
+  for (const [x, y] of C.chain[p]._pts || []) {
+    const [sx, sy] = V2.toScreen(x, y);
+    const d = el("div", { class: "corner" }); d.style.left = sx + "px"; d.style.top = sy + "px"; v2.appendChild(d);
+  }
+}
+V2.onpick = (phase, [x, y]) => {
+  const p = pendingCorners();
+  if (phase !== "point" || p < 0) return;
+  const step = C.chain[p], [W, H] = V2.size2();
+  step._pts = (step._pts || []).concat([[Math.round(Math.max(0, Math.min(W, x))), Math.round(Math.max(0, Math.min(H, y)))]]);
+  if (step._pts.length === 4) { step.points = step._pts; delete step._pts; V2.mode = "pan"; $("fx-v2").classList.remove("picking"); renderChain(); preview(); }
+  else { drawCorners(); $("fx-log").textContent = `corner ${step._pts.length} of 4 at (${step._pts.at(-1).join(", ")}) – click the next`; }
+};
+function cornersMode() { const on = pendingCorners() >= 0; V2.mode = on ? "point" : "pan"; $("fx-v2").classList.toggle("picking", on); drawCorners(); }
 function renderChain() {
   clear($("fx-chain"), C.chain.map((step, i) => {
     const spec = C.filters[step.op];
     return el("div", { class: "fstep" }, el("b", { text: `${i + 1}. ${step.op}` }),
       Object.entries(spec).map(([k, p]) => {
-        if (k === "points") return el("span", { class: "small" }, step.points ? ` corners ${step.points.map(q => `(${q[0]},${q[1]})`).join(" ")} ` : " – click the four corners on the original ",
+        if (k === "points") return el("span", { class: "small" }, step.points ? ` corners ${step.points.map(q => `(${q[0]},${q[1]})`).join(" ")} ` : " – click the four corners on the enhanced picture ",
           step.points ? el("button", { type: "button", text: "pick again", onclick: () => { step.points = null; delete step._pts; renderChain(); preview(); } }) : null);
         if (p.type === "str") return el("label", { class: "inline" }, " " + k + " ", el("select", { onchange: (e) => { step[k] = e.target.value; preview(); } },
           ["motion", "defocus"].map(o => el("option", { value: o, text: o, selected: (step[k] ?? p.default) === o }))));
@@ -573,35 +733,69 @@ function renderChain() {
       el("button", { type: "button", text: "↑", title: "earlier", disabled: i === 0, onclick: () => { [C.chain[i - 1], C.chain[i]] = [C.chain[i], C.chain[i - 1]]; renderChain(); preview(); } }),
       el("button", { type: "button", text: "✕", title: "remove", onclick: () => { C.chain.splice(i, 1); renderChain(); preview(); } }));
   }));
+  cornersMode();
 }
 $("fx-add").addEventListener("click", async () => {
   await loadFilters();
   const op = $("fx-op").value; const step = { op };
   if (op === "Perspective") step.points = null;
-  C.chain.push(step); renderChain(); if (op !== "Perspective") preview();
+  C.chain.push(step); renderChain(); preview();
 });
 $("fx-clear").addEventListener("click", () => { C.chain = []; renderChain(); preview(); });
-$("fx-orig").addEventListener("click", (ev) => {
-  const step = C.chain.find(s => s.op === "Perspective" && !s.points);
-  if (!step) return;
-  const img = ev.target, r = img.getBoundingClientRect();
-  const x = Math.round((ev.clientX - r.left) * img.naturalWidth / r.width), y = Math.round((ev.clientY - r.top) * img.naturalHeight / r.height);
-  step._pts = (step._pts || []).concat([[x, y]]);
-  if (step._pts.length === 4) { step.points = step._pts; delete step._pts; renderChain(); preview(); }
-  else $("fx-log").textContent = `corner ${step._pts.length} of 4 at (${x}, ${y})`;
+// presets: starting points tuned on plates / night footage – every value stays editable
+const PRESETS = {
+  "fx-preset-plate": [{ op: "CLAHE", clip_limit: 2.5, tile_grid: 4 }, { op: "UnsharpMask", sigma: 1.2, amount: 1.5, threshold: 0 }],
+  "fx-preset-night": [{ op: "Levels", black: 8, white: 235, gamma: 1.6 }, { op: "CLAHE", clip_limit: 2.0, tile_grid: 8 }, { op: "Denoise", strength: 6 }],
+};
+for (const [id, steps] of Object.entries(PRESETS)) $(id).addEventListener("click", async () => {
+  await loadFilters(); C.chain = steps.map(s => ({ ...s })); renderChain(); preview();
 });
 $("fx-save").addEventListener("click", async (ev) => {
   if (!C.studio) { toast("Open an event first.", true); return; }
-  if (C.chain.some(s => s.op === "Perspective" && !s.points)) { toast("Click the four corners for Perspective first.", true); return; }
+  if (pendingCorners() >= 0) { toast("Click the four corners for Perspective first.", true); return; }
   busy(ev.target, true);
   try {
     const r = await api("POST", caseApi("/enhance/save"), studioBody({ name: $("fx-name").value.trim() }));
     const x = r.enhancement;
-    if (x.reproducible) toast(`Saved ${x.name} – decoding the recording again and re-running the filters reproduced it bit for bit.`);
+    if (x.reproducible) toast(`Saved ${x.name} – decoding the recording again and re-running every step reproduced it bit for bit.`);
     else toast(`Saved ${x.name}, but decoding the recording again did NOT give the same picture – check before using it.`, true);
     const b = bundle(); b.enh = b.enh || []; if (!b.enh.includes(x.name)) b.enh.push(x.name); saveBundle(b);
     loadSaved();
   } catch (e) { toast(e.message, true); } finally { busy(ev.target, false); }
+});
+// machine reading of the picture: the plate reader and the text reader, with their confidence
+$("fx-read").addEventListener("click", async (ev) => {
+  if (!C.studio) { toast("Open an event first.", true); return; }
+  busy(ev.target, true); clear($("fx-read-out"), "reading…");
+  try {
+    const r = await api("POST", caseApi("/enhance/read"), studioBody());
+    const best = (r.plate_format.find(x => x.fit === 1) || {}).fits_as || r.plate_reader.text || r.text_reader.text || "";
+    const parts = [el("span", { text: `plate reader: ${r.plate_reader.text || "–"} (${r.plate_reader.confidence}) · text reader: ${r.text_reader.text || "–"} (${r.text_reader.confidence})` +
+      (r.plate_format.length ? ` · Indian format: ${r.plate_format.map(x => `${x.read} → ${x.fits_as || "no fit"}`).join(", ")}` : "") })];
+    if (C.studio.kind === "plate" && C.studio.track !== null) {
+      const inp = el("input", { class: "mono plate-in", value: best, maxlength: "15" });
+      parts.push(el("div", { class: "row" }, "Plate as you read it ", inp, el("button", { type: "button", class: "primary", text: "Save as the plate reading", onclick: async (e2) => {
+        busy(e2.target, true);
+        try {
+          await api("PUT", caseApi(`/plates/${encodeURIComponent(C.studio.source_id)}/${encodeURIComponent(C.studio.event_id)}/${C.studio.track}`),
+            { text: inp.value.trim(), note: `read in the Forensic Studio: ${$("fx-log").textContent}`.slice(0, 900) });
+          toast(`Plate ${inp.value.trim().toUpperCase()} saved for this vehicle.`);
+        } catch (e) { toast(e.message, true); } finally { busy(e2.target, false); }
+      } })));
+    }
+    clear($("fx-read-out"), parts);
+  } catch (e) { clear($("fx-read-out"), el("span", { class: "st-error", text: e.message })); } finally { busy(ev.target, false); }
+});
+$("fx-prompt-preset").addEventListener("change", (e) => { $("fx-prompt").value = e.target.value; });
+$("fx-ask").addEventListener("click", async (ev) => {
+  if (!C.studio) { toast("Open an event first.", true); return; }
+  const prompt = $("fx-prompt").value.trim() || $("fx-prompt-preset").value;
+  busy(ev.target, true); clear($("fx-ask-out"), "asking the AI model…");
+  try {
+    const r = await api("POST", caseApi("/enhance/ask"), studioBody({ prompt }));
+    clear($("fx-ask-out"), el("div", { class: "card" }, el("b", { text: "AI answer (advice, not evidence): " }), el("span", { class: "ai-answer", text: r.answer })),
+      el("div", { class: "small mono", text: `${r.provider} · picture SHA-256 ${r.picture_sha256.slice(0, 16)}… · kept in the case audit log` }));
+  } catch (e) { clear($("fx-ask-out"), el("span", { class: "st-error", text: e.message })); } finally { busy(ev.target, false); }
 });
 async function loadSaved() {
   if (!C.id) return;

@@ -392,7 +392,88 @@ def test_a_saved_still_is_reproduced_from_the_recording_or_flagged(env, case, mo
     x = st.get_json()["enhancement"]
     assert st.status_code == 201 and x["reproducible"] is True and x["log"].startswith("MultiFrameStack(frames=3")
     rec = json.loads(c.get(f"/api/cases/{CID}/file", query_string={"p": x["file"][:-4] + ".json"}, headers=H()).data)
-    assert rec["reproduced_from_recording"] is True and rec["stack"]["aligned"] == 3
+    assert rec["reproduced_from_recording"] is True and rec["picture_from"]["aligned"] == 3
+
+
+def _png(d):
+    return cv2.imdecode(np.frombuffer(base64.b64decode(d["image"].split(",", 1)[1]), np.uint8), cv2.IMREAD_COLOR)
+
+
+def test_the_studio_opens_on_a_person_and_super_resolves_the_region(env, case):
+    """'Enhance face / person' asks where to look (/roi: the detector's box of that track at a time
+    it was seen), the preview of a region is the region (lossless PNG), super-resolution enlarges
+    it from several frames, a saved super-resolved still reproduces from the recording, and the
+    region rules are enforced."""
+    c = env["c"]
+    ppl = c.get(f"/api/cases/{CID}/people", headers=H()).get_json()["people"]
+    p = next(x for x in ppl if x["source_id"] == "mall-gate")
+    q = {"source": "mall-gate", "event": p["event_id"], "track": p["track"]}
+    person = c.get(f"/api/cases/{CID}/roi", query_string={**q, "kind": "person"}, headers=H()).get_json()
+    face = c.get(f"/api/cases/{CID}/roi", query_string={**q, "kind": "face"}, headers=H()).get_json()
+    W, H_ = person["size"]
+    x, y, w, h = person["roi"]
+    assert 0 <= x and 0 <= y and x + w <= W and y + h <= H_ and w >= 4 and h > w           # a standing person
+    fx, fy, fw, fh = face["roi"]
+    assert x <= fx and fy < y + 0.4 * h and fh < h / 2                                     # the head, at the top
+    body = {"source_id": "mall-gate", "event_id": p["event_id"], "t": person["t"]}
+    pre = c.post(f"/api/cases/{CID}/enhance/preview", json={**body, "roi": person["roi"], "chain": []}, headers=H())
+    assert pre.status_code == 200, pre.get_json()
+    d = pre.get_json()
+    assert d["image"].startswith("data:image/png") and (d["width"], d["height"]) == (w, h) and _png(d).shape[:2] == (h, w)
+    sr = c.post(f"/api/cases/{CID}/enhance/preview", json={**body, "roi": face["roi"], "sr": {"frames": 5, "factor": 3},
+                                                          "chain": []}, headers=H()).get_json()
+    assert (sr["width"], sr["height"]) == (3 * fw, 3 * fh) and sr["log"].startswith("MultiFrameSuperResolution(frames=5")
+    stk = c.post(f"/api/cases/{CID}/enhance/preview", json={**body, "roi": person["roi"], "stack": {"frames": 3},
+                                                           "chain": []}, headers=H()).get_json()
+    assert (stk["width"], stk["height"]) == (w, h) and stk["log"].startswith("MultiFrameRegionStack(frames=3")
+    sv = c.post(f"/api/cases/{CID}/enhance/save", json={**body, "roi": face["roi"], "sr": {"frames": 5, "factor": 3},
+                                                       "chain": [{"op": "CLAHE"}], "name": "face_sr"}, headers=H())
+    assert sv.status_code == 201, sv.get_json()
+    x_ = sv.get_json()["enhancement"]
+    assert x_["reproducible"] is True and x_["log"].startswith("MultiFrameSuperResolution(") and "CLAHE(" in x_["log"]
+    rec = json.loads(c.get(f"/api/cases/{CID}/file", query_string={"p": x_["file"][:-4] + ".json"}, headers=H()).data)
+    assert rec["picture_from"]["op"] == "MultiFrameSuperResolution" and rec["picture_from"]["roi"] == face["roi"]
+    for extra, msg in (({"sr": {"frames": 5}}, "needs a region"), ({"roi": [1, 2, 3]}, "roi"),
+                       ({"roi": [0, 0, 2, 2]}, "at least 4"), ({"roi": face["roi"], "sr": {"frames": 99}}, "sr.frames")):
+        r = c.post(f"/api/cases/{CID}/enhance/preview", json={**body, "chain": [], **extra}, headers=H())
+        assert r.status_code == 400 and msg in r.get_json()["error"], (extra, r.get_json())
+    assert c.get(f"/api/cases/{CID}/roi", query_string={**q, "kind": "bogus"}, headers=H()).status_code == 400
+    assert c.get(f"/api/cases/{CID}/roi", query_string={**q, "kind": "plate"}, headers=H()).status_code == 404
+    ev = c.get(f"/api/cases/{CID}/events/mall-gate/{p['event_id']}", headers=H()).get_json()["event"]
+    assert ev["fps"] > 0                                                      # frame stepping in the Studio
+
+
+def test_the_studio_reads_text_and_asks_the_ai_model_with_an_audit_entry(env, case):
+    """Read: both readers answer with a confidence. Ask: the question and the enhanced picture go
+    to the provider of Settings › AI model providers (a fake OpenAI-compatible server here, which
+    checks it got an image); answer, provider and the picture's SHA-256 are in the case audit log.
+    Without any provider and without the built-in model the officer is told what to configure."""
+    from test_vlm_providers import FakeServer
+    c = env["c"]
+    r = _studio(c, "read", chain=[], roi=[100, 100, 200, 80])
+    assert r.status_code == 200, r.get_json()
+    d = r.get_json()
+    assert set(d) >= {"plate_reader", "text_reader", "plate_format"} and "confidence" in d["text_reader"]
+    none = _studio(c, "ask", chain=[], prompt="What is written here?")
+    assert none.status_code == 409 and "AI model providers" in none.get_json()["error"]
+    fake = FakeServer()
+    try:
+        assert c.put("/api/ai/providers", json={"providers": [{"id": "local", "provider": "openai", "base_url": fake.url,
+                                                               "model": "qwen3-vl:2b"}]}, headers=H()).status_code == 200
+        a = _studio(c, "ask", chain=[{"op": "CLAHE"}], roi=[100, 100, 200, 80], prompt="Read the vehicle number plate.")
+        assert a.status_code == 200, a.get_json()
+        ans = a.get_json()
+        assert ans["provider"] == "openai:qwen3-vl:2b" and ans["answer"] and len(ans["picture_sha256"]) == 64
+        sent = fake.requests[-1]["json"]["messages"][0]["content"]
+        assert sent[0]["text"] == "Read the vehicle number plate." and sent[1]["image_url"]["url"].startswith("data:image/jpeg")
+        audit = c.get(f"/api/cases/{CID}/audit", headers=H()).get_json()["entries"]
+        e = next(x for x in reversed(audit) if x["action"] == "ai_question")["details"]
+        assert (e["prompt"], e["answer"], e["picture_sha256"]) == ("Read the vehicle number plate.", ans["answer"],
+                                                                   ans["picture_sha256"])
+        assert _studio(c, "ask", chain=[], prompt="").status_code == 400
+    finally:
+        c.put("/api/ai/providers", json={"providers": []}, headers=H())
+        fake.close()
 
 
 # ------------------------------------------------------------------ reel and court bundle

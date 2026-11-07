@@ -158,6 +158,31 @@ def test_full_user_flow(server):
         page.fill("#pl-q", "MH12AB1284")
         page.click("#pl-go")
         expect(page.locator("#pl-list .plate-text").first).to_have_text("MH12AB1234")
+        # a vehicle whose plate the machine could not read confidently (real cameras produce them; this
+        # synthetic clip reads every plate, so one such read is added to the results): "not read" + guess
+        import sqlite3
+        db = sqlite3.connect(server["out"] / "analysis.db")
+        eid = db.execute("SELECT event_id FROM plates LIMIT 1").fetchone()[0]
+        db.execute("INSERT INTO plates (event_id, track, vehicle, camera, dt, text, ocr_text, confidence, valid_format, "
+                   "method) VALUES (?, 99, 'car', 'gate', '2026-10-31 09:30:05', '', 'MH12AE', 0.51, 0, 'ocr')", (eid,))
+        db.commit()
+        db.close()
+        page.check("#pl-unread")
+        tile = page.locator("#pl-list .tile.plate").first
+        expect(tile.locator(".plate-text")).to_have_text("not read")
+        expect(tile.locator(".plate-guess")).to_contain_text("too uncertain to report")
+        tile.locator("summary").click()
+        tile.locator("button", has_text="Start from the guess").click()
+        assert tile.locator("input.plate-in").input_value()
+        tile.locator("input.plate-in").fill("mh12ab1234")
+        tile.locator("button", has_text="Save").click()
+        expect(page.locator("#toast")).to_contain_text("Plate MH12AB1234 saved.")
+        expect(page.locator("#pl-list")).to_contain_text("Every plate was read")
+        page.uncheck("#pl-unread")
+        page.select_option("#pl-edits", "0")
+        page.fill("#pl-q", "MH12AB1234")
+        page.click("#pl-go")
+        expect(page.locator("#pl-list .tile.plate", has_text="read by examiner")).to_have_count(1)
         page.click("#tabs button[data-tab=highlights]")
         expect(page.locator("#hl-index div")).to_have_count(3, timeout=20_000)
         src = page.locator("#hl-video").get_attribute("src")
@@ -167,6 +192,23 @@ def test_full_user_flow(server):
         page.click("#tabs button[data-tab=settings]")
         expect(page.locator("#lic-out")).to_contain_text("Trial mode")
         expect(page.locator("#models-out table")).to_contain_text("Number-plate reader")
+        # AI model providers: add an OpenAI-compatible server with a model name, Test sends a real picture
+        from test_vlm_providers import FakeServer
+        fake = FakeServer()
+        try:
+            page.click("#ai-add")
+            card = page.locator("#ai-list .source").last
+            card.locator("input.ai-url").fill(fake.url)
+            card.locator("input.ai-model").fill("qwen3-vl:2b")
+            card.locator("input.ai-key").fill("sk-ui-secret")
+            card.locator("button", has_text="Test").click()
+            expect(page.locator("#ai-list .ai-result").last).to_contain_text("Working: it read the test picture", timeout=30_000)
+            expect(page.locator("#ai-list .ai-result").last).to_contain_text("Models on the server: qwen3-vl:2b")
+            assert fake.requests[-1]["auth"] == "Bearer sk-ui-secret"
+            expect(page.locator("#ai-list input.ai-key").last).to_have_attribute("placeholder", "(saved – type to replace)")
+            assert "sk-ui-secret" not in page.content()
+        finally:
+            fake.close()
         b.close()
     # Chromium builds without H.264 report a media decode error for the reel/clip; that is the
     # browser build, not the app (real Chrome/Edge play them). Everything else must be clean.

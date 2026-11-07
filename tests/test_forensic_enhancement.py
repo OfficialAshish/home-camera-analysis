@@ -183,3 +183,75 @@ def test_saved_enhancement_reproduces_bit_for_bit(tmp_path):
     # a different chain does not reproduce the saved output (the check can fail)
     other = dict(saved, chain=[{"op": "CLAHE", "clip_limit": 2.6}])
     assert not EN.reproduce(str(tmp_path), other)
+
+
+def _moving_plate_frames(n=15, seed=5):
+    """A 44 × 11 px plate (MH12AB1234) moving by sub-pixel steps across 15 frames of a 160 × 60
+    camera: rendered at 8× and area-sampled to the camera's pixels, sensor noise σ 10, JPEG q45
+    (DVR compression). Returns the frames, the region around the plate in the middle frame and
+    the ground truth of that region at 4×."""
+    sys.path.insert(0, os.path.join(ROOT, "tests"))
+    import make_plate_video as MP
+    rng = np.random.default_rng(seed)
+    HI, F = 8, 4
+    plate = MP.plate_image("MH12AB1234", 44 * HI, 11 * HI)
+    scene = np.full((60 * HI, 160 * HI, 3), 90, np.uint8)
+
+    def render(dx, dy):
+        img = scene.copy()
+        x, y = int(round(dx * HI)), int(round(dy * HI))
+        img[y:y + plate.shape[0], x:x + plate.shape[1]] = plate
+        return img
+    frames, pos = [], []
+    for i in range(n):
+        dx, dy = 30 + i * 0.37, 24 + i * 0.21
+        nat = cv2.resize(render(dx, dy), (160, 60), interpolation=cv2.INTER_AREA)
+        nat = np.clip(nat.astype(np.float32) + rng.normal(0, 10, nat.shape), 0, 255).astype(np.uint8)
+        ok, b = cv2.imencode(".jpg", nat, [cv2.IMWRITE_JPEG_QUALITY, 45])
+        frames.append(cv2.imdecode(b, 1))
+        pos.append((dx, dy))
+    rx, ry = pos[n // 2]
+    roi = [int(rx) - 3, int(ry) - 3, 50, 17]
+    gt = cv2.resize(render(rx, ry), (160 * F, 60 * F), interpolation=cv2.INTER_AREA)[
+        roi[1] * F:(roi[1] + roi[3]) * F, roi[0] * F:(roi[0] + roi[2]) * F]
+    return frames, roi, gt
+
+
+def test_multi_frame_super_resolution_recovers_a_small_moving_plate():
+    """Measured: the region is followed through the moving frames, registered with sub-pixel ECC at
+    4× and fused – closer to the true picture than enlarging the best single frame, much closer
+    than a median of the frames without alignment (the plate moves), and the text reader reads
+    the plate from the super-resolved picture but not from the single frame. Deterministic."""
+    frames, roi, gt = _moving_plate_frames()
+    sr, rec = EN.super_resolve(frames, roi, 4)
+    assert sr.shape[:2] == gt.shape[:2] and rec["aligned"] >= 13 and rec["roi"] == roi
+    single = cv2.resize(EN.crop_roi(frames[7], roi), (roi[2] * 4, roi[3] * 4), interpolation=cv2.INTER_CUBIC)
+    unaligned = np.median(np.stack([cv2.resize(EN.crop_roi(f, roi), (roi[2] * 4, roi[3] * 4),
+                                               interpolation=cv2.INTER_CUBIC) for f in frames]), 0).astype(np.uint8)
+    p_sr, p_single, p_unaligned = _psnr(sr, gt), _psnr(single, gt), _psnr(unaligned, gt)
+    assert p_sr > p_single + 1.0 and p_sr > p_unaligned + 3.0, (p_sr, p_single, p_unaligned)
+    # same frames, same picture – also from buffers at other memory alignments (OpenCV's float SIMD
+    # paths differ in the last bit with the alignment; that made a saved still not reproduce)
+    def moved(f, k):
+        buf = np.empty(f.size + 64, np.uint8)
+        a = buf[k:k + f.size].reshape(f.shape)
+        a[...] = f
+        return a
+    for k in (1, 3, 7):
+        assert np.array_equal(EN.super_resolve([moved(f, k) for f in frames], roi, 4)[0], sr), k
+        assert np.array_equal(EN.stack_frames([moved(f, k) for f in frames[5:10]])[0], EN.stack_frames(frames[5:10])[0]), k
+    from cctv_analysis import modelcache
+    from cctv_analysis.ocr import RapidOCREngine
+    modelcache.init(os.environ.get("CCTV_TEST_MODEL_DIR", os.path.join(ROOT, ".test_models")))
+    ocr = RapidOCREngine()
+
+    def read(img):
+        return "".join(t for t, _ in ocr.read(cv2.copyMakeBorder(img, 20, 20, 20, 20, cv2.BORDER_REPLICATE))).replace(" ", "")
+    assert read(sr) == "MH12AB1234" and read(single) != "MH12AB1234"
+    # factor 1 = the region followed and stacked without enlarging (Studio "several frames" with a region)
+    st, rec1 = EN.super_resolve(frames, roi, 1, sharpen=False)
+    assert st.shape[:2] == (roi[3], roi[2]) and rec1["op"] == "MultiFrameRegionStack"
+    with pytest.raises(ValueError):
+        EN.super_resolve(frames[:1], roi, 4)
+    with pytest.raises(ValueError):
+        EN.super_resolve(frames, roi, 4, motion="bogus")

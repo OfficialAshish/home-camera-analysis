@@ -237,6 +237,28 @@ def search_roots(recent: List[str]) -> List[str]:
     return out
 
 
+class _Readers:
+    """The plate reader and the text reader of the Forensic Studio, loaded once."""
+
+    def __init__(self, models_dir: str):
+        self.models_dir = models_dir
+        self.lock = threading.Lock()
+        self.cache: Dict[str, object] = {}
+
+    def get(self, kind: str):
+        with self.lock:
+            if kind not in self.cache:
+                from .. import modelcache
+                modelcache.init(self.models_dir)
+                if kind == "plate":
+                    from ..plates import FastPlateOCR
+                    self.cache[kind] = FastPlateOCR()
+                else:
+                    from ..ocr import RapidOCREngine
+                    self.cache[kind] = RapidOCREngine()
+            return self.cache[kind]
+
+
 class _SemanticModels:
     """SigLIP text encoders for natural-language search, loaded once per model name."""
 
@@ -261,6 +283,7 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
     frames_cache: "collections.OrderedDict[tuple, list]" = collections.OrderedDict()
     frames_lock = threading.Lock()
     sem_models = _SemanticModels(models_dir)
+    readers = _Readers(models_dir)
 
     def cases_root() -> str:
         return settings.load().get("cases_root") or os.path.join(data_dir, "cases")
@@ -598,8 +621,15 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         for p in e["plates"]:
             p["crop"], p["enhanced"] = _case_rel(sid, p["crop"]), _case_rel(sid, p["enhanced"])
         off = s.offset_for(e["camera"])
+        db = _db(out)
+        assert db is not None
+        try:                                      # the Forensic Studio steps frame by frame
+            v = db.execute("SELECT v.fps FROM events e JOIN videos v ON v.id = e.video_id WHERE e.event_id=?",
+                           (eid,)).fetchone()
+        finally:
+            db.close()
         e.update(source_id=sid, source_label=s.label, offset_seconds=off, calibrated_start=calibrate(e["start"], off),
-                 calibrated_end=calibrate(e["end"], off))
+                 calibrated_end=calibrate(e["end"], off), fps=round(float(v["fps"]), 3) if v and v["fps"] else 25.0)
         e.pop("review", None)                     # reviews belong to the single-folder Results screen
         return jsonify(event=e)
 
@@ -805,30 +835,54 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
 
     # ------------------------------------------------------------ Forensic Studio
     def studio_input(c: Case, d: dict, fresh: bool = False):
+        """The picture the filters start from, from the recording: one frame, a stack of frames,
+        or a multi-frame super-resolution of a region – then cut to the region (`roi`)."""
         from .. import enhance as EN
         s = source_of(c, d.get("source_id"))
         t = d.get("t")
         t = None if t in (None, "") else _num(t, "t", 0, 1e6, 0)
         stack = d.get("stack") or {}
-        if not isinstance(stack, dict):
-            raise ApiError(400, "stack must be an object")
-        n = int(_num(stack.get("frames"), "stack.frames", 1, 15, 1))
+        sr = d.get("sr") or {}
+        if not isinstance(stack, dict) or not isinstance(sr, dict):
+            raise ApiError(400, "stack and sr must be objects")
+        roi = d.get("roi")
+        if roi is not None:
+            if not (isinstance(roi, list) and len(roi) == 4 and all(isinstance(v, (int, float)) for v in roi)) or \
+                    roi[2] < 4 or roi[3] < 4:
+                raise ApiError(400, "roi: [x, y, width, height] in pixels of the frame, at least 4×4")
+            roi = [int(round(v)) for v in roi]
+        if sr and roi is None:
+            raise ApiError(400, "super-resolution needs a region: select the plate or face first")
+        n = int(_num(sr.get("frames"), "sr.frames", 2, 31, 9)) if sr else int(_num(stack.get("frames"), "stack.frames", 1, 15, 1))
         e, t, frames = load_frames(c, s.source_id, d.get("event_id", ""), t, n, fresh)
         chain = d.get("chain") or []
         try:
             EN.describe(chain)                       # validates every step
         except ValueError as ex:
             raise ApiError(400, str(ex))
-        stack_rec = None
-        img = frames[0]
-        if n > 1:
-            if len(frames) < 2:
-                raise ApiError(422, "not enough frames at this time to stack")
-            try:
-                img, stack_rec = EN.stack_frames(frames, stack.get("method", "median"), stack.get("motion", "euclidean"))
-            except ValueError as ex:
-                raise ApiError(400, str(ex))
-        return s, e, t, img, chain, stack_rec
+        pre_rec = None
+        img = frames[len(frames) // 2] if n > 1 else frames[0]
+        try:
+            if sr:
+                if len(frames) < 2:
+                    raise ApiError(422, "not enough frames at this time for super-resolution")
+                img, pre_rec = EN.super_resolve(frames, roi, int(_num(sr.get("factor"), "sr.factor", 2, 8, 4)),
+                                                sr.get("motion", "affine"))
+            elif n > 1:
+                if len(frames) < 2:
+                    raise ApiError(422, "not enough frames at this time to stack")
+                if roi is not None:              # follow the region (a moving vehicle), do not align the background
+                    img, pre_rec = EN.super_resolve(frames, roi, 1, stack.get("motion", "euclidean"), sharpen=False)
+                else:
+                    img, pre_rec = EN.stack_frames(frames, stack.get("method", "median"), stack.get("motion", "euclidean"))
+            if roi is not None and not sr and n == 1:
+                img = EN.crop_roi(img, roi)
+                pre_rec = {**(pre_rec or {}), "roi": roi, "log": ((pre_rec or {}).get("log", "") + " → " if pre_rec else "")
+                           + f"Region(x={roi[0]}, y={roi[1]}, w={roi[2]}, h={roi[3]})"}
+                pre_rec.setdefault("op", "Region")
+        except ValueError as ex:
+            raise ApiError(400, str(ex))
+        return s, e, t, img, chain, pre_rec
 
     def run_chain(img, chain):
         from .. import enhance as EN
@@ -844,12 +898,15 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
         c = open_case(cid, proxies=True)
         _, _, _, img, chain, stack_rec = studio_input(c, d)
         out, rec = run_chain(img, chain)
-        ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        # lossless while it is small enough: a zoomed-in preview must show the result's pixels, not JPEG blocks
+        small = out.shape[0] * out.shape[1] <= 2_000_000
+        ok, buf = cv2.imencode(".png", out) if small else cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if not ok:
             raise ApiError(500, "could not encode the preview")
         log_text = " → ".join(x for x in ((stack_rec or {}).get("log", ""), rec["log"]) if x and x != "(no filter)") \
             or "(no filter)"
-        return jsonify(image="data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode(), log=log_text,
+        return jsonify(image=("data:image/png;base64," if small else "data:image/jpeg;base64,") +
+                       base64.b64encode(buf.tobytes()).decode(), log=log_text,
                        ms=rec["ms"], width=int(out.shape[1]), height=int(out.shape[0]),
                        aligned=(stack_rec or {}).get("aligned"))
 
@@ -891,6 +948,132 @@ def register(app, *, jobs, settings, lic_status: Callable, body: Callable[[], di
                        input_sha256=saved["input_sha256"], output_sha256=saved["output_sha256"],
                        reproduced_from_recording=saved["reproducible"], by=user())
         return jsonify(enhancement=_enh_public(saved)), 201
+
+    @app.post("/api/cases/<cid>/enhance/read")
+    def enhance_read(cid):
+        """Machine reading of the Studio picture: the number-plate reader and the general text
+        reader, each with its confidence, and the Indian-format fit. Advisory: the examiner
+        decides and types the plate (…/plates/…)."""
+        from ..plates import plate_fit
+        d = body()
+        c = open_case(cid, proxies=True)
+        _, _, _, img, chain, _ = studio_input(c, d)
+        out, _ = run_chain(img, chain)
+        res: Dict[str, object] = {}
+        try:
+            txt, conf = readers.get("plate").read(out)
+            res["plate_reader"] = {"text": txt, "confidence": round(float(conf), 3)}
+        except Exception as e:
+            res["plate_reader"] = {"text": "", "confidence": 0.0, "error": str(e)[:200]}
+        try:
+            import cv2
+            reads = readers.get("text").read(cv2.copyMakeBorder(out, 16, 16, 16, 16, cv2.BORDER_REPLICATE))
+            text = " ".join(t for t, _ in reads)
+            res["text_reader"] = {"text": text, "confidence": round(min((float(cf) for _, cf in reads), default=0.0), 3)}
+        except Exception as e:
+            res["text_reader"] = {"text": "", "confidence": 0.0, "error": str(e)[:200]}
+        cands = [x["text"] for x in (res["plate_reader"], res["text_reader"]) if isinstance(x, dict) and x.get("text")]
+        res["plate_format"] = [{"read": t, "fits_as": plate_fit(t.replace(" ", ""))[0],
+                                "fit": plate_fit(t.replace(" ", ""))[1]} for t in cands]
+        return jsonify(res)
+
+    @app.post("/api/cases/<cid>/enhance/ask")
+    def enhance_ask(cid):
+        """Ask the AI model(s) of Settings › AI model providers about the Studio picture. The answer
+        is advisory text (it reads or describes what is there; it never changes the picture) and
+        is written to the case audit log with the question and the picture's SHA-256."""
+        from .. import enhance as EN
+        from ..vlm import make_vlm
+        from . import ai_providers
+        d = body()
+        prompt = _text(d.get("prompt"), "prompt", 1000)
+        if len(prompt) < 3:
+            raise ApiError(400, "type a question for the AI model")
+        overrides = ai_providers.config_overrides(settings)
+        if not overrides:                         # the built-in model, only when it is already on this PC
+            from ..sysinfo import model_inventory
+            if not any(m["id"] == "qwen3-vl-2b" and m["installed"] for m in model_inventory(models_dir)):
+                raise ApiError(409, "NOT_CONFIGURED: no AI model – add one in Settings › AI model providers, or "
+                                    "download the built-in Qwen3-VL-2B (Settings › Models)")
+        c = open_case(cid, proxies=True)
+        s, e, t, img, chain, _ = studio_input(c, d)
+        out, rec = run_chain(img, chain)
+        cfg = Config(model_cache_dir=models_dir, **overrides)
+        from .. import modelcache
+        modelcache.init(models_dir)
+        try:
+            vlm = make_vlm(cfg, "cpu")
+            answer = vlm.ask(out, prompt, 300)
+        except Exception as ex:
+            raise ApiError(502, f"the AI model could not answer: {str(ex)[:300]}")
+        provider = getattr(vlm, "last_provider", "") or f"{cfg.vlm_provider}:{cfg.vlm_model}"
+        sha = EN.sha256_bytes(EN.png_bytes(out))
+        c.audit.append("ai_question", case_id=c.case_id, source=s.source_id, event_id=e["event_id"], t_off=t,
+                       prompt=prompt, answer=answer[:2000], provider=provider, picture_sha256=sha, filters=rec["log"],
+                       by=user())
+        return jsonify(answer=answer, provider=provider, picture_sha256=sha)
+
+    @app.get("/api/cases/<cid>/roi")
+    def case_roi(cid):
+        """Where to look in the Forensic Studio for one plate / vehicle / person / face of an event:
+        {t, roi: [x, y, w, h] in pixels of the recording's frame}. Plates: the plate box the reader
+        found; tracks: the detector's box nearest to `t` (a face: the top of the person's box)."""
+        a = request.args
+        kind = a.get("kind", "")
+        if kind not in ("plate", "vehicle", "person", "face"):
+            raise ApiError(400, "kind: plate, vehicle, person or face")
+        c = open_case(cid)
+        s = source_of(c, a.get("source"))
+        e = event_row(c, s.source_id, a.get("event", ""))
+        try:
+            track = int(a.get("track", ""))
+        except ValueError:
+            raise ApiError(400, "track must be a number")
+        from .. import video_io as V
+        video = c.source(s.source_id).recording(e["rel_path"])
+        if not os.path.exists(video):
+            raise ApiError(409, f"the recording is not available: {e['rel_path']} (is the drive plugged in?)")
+        meta = V.probe(video)
+        W, H = meta["width"], meta["height"]
+        db = _db(c.source_dir(s.source_id))
+        assert db is not None
+        try:
+            if kind == "plate":
+                if "box" not in {x[1] for x in db.execute("PRAGMA table_info(plates)")}:
+                    raise ApiError(404, "no plate position stored: this source was analysed with an older version – "
+                                        "select the plate on the frame")
+                r = db.execute("SELECT t_off, box FROM plates WHERE event_id=? AND track=?", (e["event_id"], track)).fetchone()
+                if r is None or not r["box"]:
+                    raise ApiError(404, "no plate position stored for this vehicle – select the plate on the frame")
+                bx = json.loads(r["box"])
+                sx, sy = (W / bx[4], H / bx[5]) if len(bx) == 6 and bx[4] and bx[5] else (1.0, 1.0)
+                x1, y1, x2, y2 = bx[0] * sx, bx[1] * sy, bx[2] * sx, bx[3] * sy
+                pw, ph = x2 - x1, y2 - y1
+                roi = [x1 - 0.15 * pw, y1 - 0.4 * ph, pw * 1.3, ph * 1.8]
+                t = float(r["t_off"])
+            else:
+                t_want = _num(a.get("t"), "t", 0, 1e6, -1)
+                if t_want < 0:
+                    tr = db.execute("SELECT first_off FROM tracks WHERE event_id=? AND track=?", (e["event_id"], track)).fetchone()
+                    t_want = float(tr["first_off"]) if tr else float(e["start_off"] or 0)
+                r = db.execute("SELECT t_off, x1, y1, x2, y2 FROM detections WHERE event_id=? AND track=? "
+                               "ORDER BY ABS(t_off - ?) LIMIT 1", (e["event_id"], track, t_want)).fetchone()
+                if r is None:
+                    raise ApiError(404, "no position of this track is stored")
+                x1, y1, x2, y2 = r["x1"] * W, r["y1"] * H, r["x2"] * W, r["y2"] * H
+                bw, bh = x2 - x1, y2 - y1
+                if kind == "face":                        # the head: top third of a standing person's box
+                    roi = [x1 + 0.1 * bw, y1 - 0.02 * bh, 0.8 * bw, 0.32 * bh]
+                else:
+                    roi = [x1 - 0.05 * bw, y1 - 0.05 * bh, 1.1 * bw, 1.1 * bh]
+                t = float(r["t_off"])
+        finally:
+            db.close()
+        x, y = max(0, int(roi[0])), max(0, int(roi[1]))
+        w_, h_ = int(min(W - x, roi[2])), int(min(H - y, roi[3]))
+        if w_ < 4 or h_ < 4:
+            raise ApiError(422, "the region is too small or outside the picture")
+        return jsonify(t=round(t, 3), roi=[x, y, w_, h_], size=[W, H], kind=kind)
 
     def _enh_public(r: dict) -> dict:
         return {k: r.get(k) for k in ("name", "input", "log", "source", "input_sha256", "output_sha256", "created",

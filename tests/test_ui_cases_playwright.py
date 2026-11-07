@@ -5,6 +5,7 @@ clothing-colour search, "find this person on all cameras", the journey, Forensic
 court bundle with Part A/Part B, its verification and the certificate preview. Fails on any
 browser console error or failed request."""
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -160,10 +161,56 @@ def test_officer_investigation_flow(server):
         expect(page.locator("#fx-log")).to_contain_text("CLAHE(clip_limit=2, tile_grid=(8,8)) · 640×360", timeout=30_000)
         page.locator("#fx-chain input").first.fill("3")
         expect(page.locator("#fx-log")).to_contain_text("CLAHE(clip_limit=3", timeout=30_000)
+        # zoom: the wheel zooms at the pointer (1.25× per notch), Fit returns; 8× from the zoom bar
+        page.wait_for_function("() => V1.z > 0 && document.getElementById('fx-out').naturalWidth === 640", timeout=30_000)
+        z1 = page.evaluate("V1.z")
+        v1 = page.locator("#fx-v1").bounding_box()
+        page.mouse.move(v1["x"] + v1["width"] / 2, v1["y"] + v1["height"] / 2)
+        for _ in range(4):
+            page.mouse.wheel(0, -120)
+        page.wait_for_function(f"() => Math.abs(V1.z / {z1} - 1.25 ** 4) < 0.01")
+        page.locator(".zoombar button[data-zoom=fit]").click()
+        assert abs(page.evaluate("V1.z") - z1) < 1e-6
+        page.locator(".zoombar button[data-zoom='8']").click()
+        assert page.evaluate("V2.z") == 8 and "enhanced 800 %" in page.locator("#fx-zoom").inner_text()
+        page.locator(".zoombar button[data-zoom=fit]").click()
+        expect(page.locator("#fx-v2")).to_have_class(re.compile(r"\bpixels\b"))     # real pixels, no smoothing
+        # region: drag a rectangle on the original (picture pixels 100,80 -> 300,200)
+        page.click("#fx-roi-pick")
+        page.locator("#fx-v1").scroll_into_view_if_needed()
+        v1 = page.locator("#fx-v1").bounding_box()             # where the viewer is now (the page scrolled)
+        a = page.evaluate("V1.toScreen(100, 80)")
+        z = page.evaluate("V1.toScreen(300, 200)")
+        page.mouse.move(v1["x"] + a[0], v1["y"] + a[1])
+        page.mouse.down()
+        page.mouse.move(v1["x"] + (a[0] + z[0]) / 2, v1["y"] + (a[1] + z[1]) / 2)
+        page.mouse.move(v1["x"] + z[0], v1["y"] + z[1])
+        page.mouse.up()
+        expect(page.locator("#fx-roi-text")).to_contain_text("200 × 120 px")
+        expect(page.locator("#fx-roibox")).to_be_visible()
+        page.wait_for_function("() => document.getElementById('fx-out').naturalWidth === 200", timeout=30_000)
+        # super-resolution of the region: 9 frames, 4×
+        page.select_option("#fx-mode", "sr")
+        expect(page.locator("#fx-log")).to_contain_text("MultiFrameSuperResolution(frames=9", timeout=60_000)
+        page.wait_for_function("() => document.getElementById('fx-out').naturalWidth === 800", timeout=30_000)
+        t0 = float(page.input_value("#fx-t"))
+        page.click("#fx-next")
+        assert abs(float(page.input_value("#fx-t")) - t0 - 1 / 25) < 0.002     # one frame of the 25 fps recording
         page.fill("#fx-name", "shop_door")
         page.click("#fx-save")
         expect(page.locator("#toast")).to_contain_text("reproduced it bit for bit", timeout=30_000)
         expect(page.locator("#fx-saved .tile")).to_have_count(1)
+
+        # "Enhance person" on a person of an event opens the Studio on that person's region
+        page.click("#tabs button[data-tab=investigate]")
+        cards.nth(next(i for i, t in enumerate(texts) if "Mall Gate NVR" in t and "person" in t)).click()
+        page.locator("#ce-detail button", has_text="Enhance person").first.click()
+        expect(page.locator("#tab-studio")).to_be_visible()
+        expect(page.locator("#fx-roi-text")).not_to_have_text("whole frame")
+        roi = page.evaluate("C.studio.roi")
+        page.wait_for_function(f"() => document.getElementById('fx-out').naturalWidth === {roi[2]}", timeout=30_000)
+        page.click("#fx-roi-clear")
+        expect(page.locator("#fx-roi-text")).to_have_text("whole frame")
 
         page.click("#tabs button[data-tab=bundle]")
         expect(page.locator("#bd-items tr")).to_have_count(1)

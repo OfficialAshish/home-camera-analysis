@@ -89,3 +89,12 @@ tr.off{opacity:.45}img.thumb{width:72px;border-radius:4px;vertical-align:middle}
 @media (max-width:900px){.studio{grid-template-columns:1fr}}
 .choose-drop{border:2px solid #2563eb;background:#eff6ff;padding:12px;margin:10px 0;border-radius:8px}
 .choose-drop b{color:#1e3a8a}.drop-path{flex:1;min-width:260px}
+.viewer{position:relative;overflow:hidden;height:440px;background:#111;border-radius:6px;cursor:grab;user-select:none}
+.viewer.picking{cursor:crosshair}.viewer.panning{cursor:grabbing}
+.viewer img{position:absolute;left:0;top:0;transform-origin:0 0;max-width:none!important;width:auto!important;border-radius:0!important;min-height:0!important}
+.viewer.pixels img{image-rendering:pixelated}
+.roibox{position:absolute;border:2px solid #ffd600;box-shadow:0 0 0 1px #000;pointer-events:none}
+.roibox.drag{border-style:dashed;border-color:#00e5ff}
+.zoombar button{padding:4px 9px}.ask textarea{min-width:300px}
+.corner{position:absolute;width:10px;height:10px;margin:-6px 0 0 -6px;border-radius:50%;background:#ff1744;border:2px solid #fff;pointer-events:none}
+.ai-answer{white-space:pre-wrap}

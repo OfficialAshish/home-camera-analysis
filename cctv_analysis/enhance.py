@@ -40,7 +40,7 @@ import hashlib
 import json
 import os
 import time
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -306,7 +306,7 @@ def stack_frames(frames: Sequence[np.ndarray], method: str = "median", motion: s
     h, w = ref.shape[:2]
     if any(f.shape != ref.shape for f in frames):
         raise ValueError("all frames must have the same size")
-    ref_g = cv2.GaussianBlur(cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255, (5, 5), 0)
+    ref_g = _smooth_gray(ref)
     aligned, scores = [], []
     mode = MOTIONS[motion]
     for i, f in enumerate(frames):
@@ -314,7 +314,7 @@ def stack_frames(frames: Sequence[np.ndarray], method: str = "median", motion: s
             aligned.append(f.astype(np.float32))
             scores.append(1.0)
             continue
-        g = cv2.GaussianBlur(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).astype(np.float32) / 255, (5, 5), 0)
+        g = _smooth_gray(f)
         warp = np.eye(3, 3, dtype=np.float32) if mode == cv2.MOTION_HOMOGRAPHY else np.eye(2, 3, dtype=np.float32)
         try:
             cc, warp = cv2.findTransformECC(ref_g, g, warp, mode,
@@ -334,6 +334,137 @@ def stack_frames(frames: Sequence[np.ndarray], method: str = "median", motion: s
     return out, {"op": "MultiFrameStack", "method": method, "motion": motion, "frames": len(frames),
                  "aligned": used, "ecc": scores,
                  "log": f"MultiFrameStack(frames={len(frames)}, aligned={used}, motion={motion}, method={method})"}
+
+
+# ------------------------------------------------------------------ multi-frame super-resolution
+def _grad(img: np.ndarray) -> np.ndarray:
+    """Blurred gradient magnitude for the alignment, computed bit-exactly: OpenCV's float32 filters
+    can differ in the last bit with the memory alignment of the buffer (SIMD paths), which made the
+    same frames give a slightly different picture – a saved still must reproduce bit for bit. So:
+    integer Sobel, element-wise NumPy magnitude, the bit-exact 8-bit Gaussian blur."""
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gx = cv2.Sobel(g, cv2.CV_16S, 1, 0, ksize=3).astype(np.float32)
+    gy = cv2.Sobel(g, cv2.CV_16S, 0, 1, ksize=3).astype(np.float32)
+    m = np.minimum(np.sqrt(gx * gx + gy * gy) / 4.0, 255.0).round().astype(np.uint8)
+    return cv2.GaussianBlur(m, (0, 0), 1.0).astype(np.float32) / 255.0
+
+
+def _smooth_gray(img: np.ndarray, k: int = 5) -> np.ndarray:
+    """Grey, blurred, float32 in 0..1 – bit-exact (8-bit blur first, see _grad)."""
+    return cv2.GaussianBlur(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), (k, k), 0).astype(np.float32) / 255.0
+
+
+def super_resolve(frames: Sequence[np.ndarray], roi: Optional[Sequence[int]] = None, factor: int = 4,
+                  motion: str = "affine", sharpen: bool = True) -> Tuple[np.ndarray, dict]:
+    """Multi-frame super-resolution of a region (shift-and-add).
+
+    A plate or a face in CCTV footage covers few pixels, but it is seen in many consecutive
+    frames, each sampled at a slightly different sub-pixel position (the vehicle moves, the
+    sensor noise differs). The region of the middle frame is found in every other frame by
+    normalised cross-correlation (the object moves several pixels per frame; frames where it is
+    not found with correlation ≥ 0.5 or not fully in view are left out); every frame's region
+    (with a common margin for the alignment) is enlarged `factor` times, aligned to the middle
+    frame with ECC (``findTransformECC`` on gradient images, so lighting changes do not disturb
+    it) at the enlarged resolution – sub-pixel registration – and the aligned stack is fused with
+    the per-pixel median: detail that is in every frame adds up, noise and compression blocks of
+    single frames do not. A mild unsharp mask (``sharpen``) undoes the interpolation blur.
+    ``factor=1`` is a stack of the followed region without enlarging (``MultiFrameRegionStack``).
+    It shows what the frames contain; it invents nothing (no learned model). Returns (image, record).
+    Measured in ``tests/test_forensic_enhancement.py`` (44 × 11 px plate, 15 frames, noise and
+    JPEG): PSNR against the true picture 18.0 dB vs 16.6 dB for the best single frame enlarged,
+    13.4 dB for a median without alignment; the text reader reads the plate only after it."""
+    if motion not in MOTIONS:
+        raise ValueError(f"motion must be one of {list(MOTIONS)}")
+    if not 1 <= int(factor) <= 8:
+        raise ValueError("factor must be 1 to 8")
+    frames = [_as_bgr(f) for f in frames]
+    if not 2 <= len(frames) <= 31:
+        raise ValueError("super-resolution needs 2 to 31 frames")
+    h, w = frames[0].shape[:2]
+    if any(f.shape != frames[0].shape for f in frames):
+        raise ValueError("all frames must have the same size")
+    x, y, rw, rh = (0, 0, w, h) if roi is None else [int(v) for v in roi]
+    x, y = max(0, min(x, w - 2)), max(0, min(y, h - 2))
+    rw, rh = max(2, min(rw, w - x)), max(2, min(rh, h - y))
+    m = max(4, int(0.25 * max(rw, rh)))                        # context for the alignment
+    f = int(factor)
+    if (rw + 2 * m) * (rh + 2 * m) * f * f > MAX_PIXELS / 4:
+        raise ValueError("region too large for this factor – select a smaller region")
+    ref_i = len(frames) // 2
+    # 1. follow the region through the frames (a vehicle moves several pixels per frame): the
+    #    reference region is found in every frame by normalised cross-correlation near its position
+    gray = [cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY) for fr in frames]
+    tpl = gray[ref_i][y:y + rh, x:x + rw]
+    reach = int(1.5 * max(rw, rh)) + 40
+    offsets, found = [], []
+    for i, g in enumerate(gray):
+        if i == ref_i:
+            offsets.append((0, 0))
+            found.append(1.0)
+            continue
+        sx0, sy0 = max(0, x - reach), max(0, y - reach)
+        sx1, sy1 = min(w, x + rw + reach), min(h, y + rh + reach)
+        res = cv2.matchTemplate(g[sy0:sy1, sx0:sx1], tpl, cv2.TM_CCOEFF_NORMED)
+        _, best, _, loc = cv2.minMaxLoc(res)
+        offsets.append((sx0 + loc[0] - x, sy0 + loc[1] - y))
+        found.append(float(best))
+    def room(i):                                                 # free pixels around the region in frame i
+        dx, dy = offsets[i]
+        return min(x + dx, y + dy, w - (x + dx + rw), h - (y + dy + rh))
+    keep = [i for i in range(len(frames)) if found[i] >= 0.5 and room(i) >= 0]   # same object, fully in view
+    if ref_i not in keep:
+        keep = [ref_i] + keep
+    m = max(0, min([m] + [room(i) for i in keep]))               # one margin that every kept frame has
+    crops = [frames[i][y + offsets[i][1] - m:y + offsets[i][1] + rh + m, x + offsets[i][0] - m:x + offsets[i][0] + rw + m]
+             for i in keep]
+    # 2. enlarge and register every crop to the reference with sub-pixel ECC at the enlarged size
+    up = [cv2.resize(c, (c.shape[1] * f, c.shape[0] * f), interpolation=cv2.INTER_CUBIC) for c in crops]
+    ref_i = keep.index(ref_i)
+    ref_g = _grad(up[ref_i])
+    mode = MOTIONS[motion]
+    aligned, scores = [], []
+    H, W = up[ref_i].shape[:2]
+    for i, u in enumerate(up):
+        if i == ref_i:
+            aligned.append(u.astype(np.float32))
+            scores.append(1.0)
+            continue
+        warp = np.eye(3, 3, dtype=np.float32) if mode == cv2.MOTION_HOMOGRAPHY else np.eye(2, 3, dtype=np.float32)
+        try:
+            cc, warp = cv2.findTransformECC(ref_g, _grad(u), warp, mode,
+                                            (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 200, 1e-6), None, 5)
+        except cv2.error:
+            scores.append(0.0)
+            continue
+        if cc < 0.3:                                             # a frame that does not match (occlusion, wrong object)
+            scores.append(round(float(cc), 4))
+            continue
+        flags = cv2.INTER_CUBIC + cv2.WARP_INVERSE_MAP
+        a = cv2.warpPerspective(u, warp, (W, H), flags=flags, borderMode=cv2.BORDER_REPLICATE) \
+            if mode == cv2.MOTION_HOMOGRAPHY else cv2.warpAffine(u, warp, (W, H), flags=flags, borderMode=cv2.BORDER_REPLICATE)
+        aligned.append(a.astype(np.float32))
+        scores.append(round(float(cc), 4))
+    fused = np.median(np.stack(aligned), axis=0).round().clip(0, 255).astype(np.uint8)
+    if sharpen:                                                  # unsharp mask, bit-exact (8-bit blur)
+        blur = cv2.GaussianBlur(fused, (0, 0), 0.6 * f).astype(np.float32)
+        fused = (fused.astype(np.float32) * 1.8 - 0.8 * blur).round().clip(0, 255).astype(np.uint8)
+    out = fused
+    out = out[m * f:m * f + rh * f, m * f:m * f + rw * f].copy()
+    used = len(aligned)
+    op = "MultiFrameSuperResolution" if f > 1 else "MultiFrameRegionStack"
+    return out, {"op": op, "frames": len(frames), "aligned": used, "factor": f, "motion": motion,
+                 "roi": [x, y, rw, rh], "ecc": scores, "sharpen": bool(sharpen),
+                 "log": f"{op}(frames={len(frames)}, aligned={used}, factor={f}, motion={motion}, "
+                        f"roi=({x},{y},{rw},{rh}){', sharpen' if sharpen else ''})"}
+
+
+def crop_roi(img: np.ndarray, roi: Optional[Sequence[int]]) -> np.ndarray:
+    if roi is None:
+        return img
+    h, w = img.shape[:2]
+    x, y, rw, rh = [int(v) for v in roi]
+    x, y = max(0, min(x, w - 1)), max(0, min(y, h - 1))
+    return img[y:y + max(1, min(rh, h - y)), x:x + max(1, min(rw, w - x))].copy()
 
 
 # ------------------------------------------------------------------ records
@@ -363,7 +494,7 @@ def save_enhancement(dest_dir: str, name: str, source: dict, input_img: np.ndarr
     rec = {"name": base + ".png", "input": base + "_input.png", "source": source,
            "input_sha256": sha256_bytes(inp), "output_sha256": sha256_bytes(outp),
            "log": record.get("log", ""), "chain": record.get("chain", []),
-           **({"stack": {k: v for k, v in record.items() if k not in ("log", "chain")}} if record.get("op") else {}),
+           **({"picture_from": {k: v for k, v in record.items() if k not in ("log", "chain")}} if record.get("op") else {}),
            "tool": f"Drishti-AI (home-camera-analysis {__version__})", "opencv": cv2.__version__,
            "numpy": np.__version__, "operator": operator,
            "created": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
